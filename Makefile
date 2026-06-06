@@ -1,0 +1,74 @@
+CODESIGN_IDENTITY ?= -
+VERSION ?=
+
+-include .env.release
+
+export SPARKLE_PUBLIC_ED_KEY
+export NOTARY_PROFILE
+
+.PHONY: build check run dev-reset dev-reset-hard dev-fresh dev-fresh-hard release-build release release-upload release-test release-config sparkle-key notary-profile app install release-package clean
+
+build:
+	swift build
+
+check:
+	swift build -Xswiftc -warnings-as-errors
+	for f in script/*.sh; do bash -n "$$f"; done
+	plutil -lint Sources/KEFCompanion/Info.plist
+
+run:
+	./script/build_and_run.sh
+
+dev-reset:
+	./script/reset_dev.sh
+
+dev-reset-hard:
+	./script/reset_dev.sh --include-production-permissions
+
+dev-fresh: dev-reset
+	./script/build_and_run.sh
+
+dev-fresh-hard: dev-reset-hard
+	./script/build_and_run.sh
+
+release-build:
+	swift build -c release
+
+app:
+	SPARKLE_PUBLIC_ED_KEY= SPARKLE_FEED_URL= CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" ./script/install_app.sh --stage-only
+
+install:
+	SPARKLE_PUBLIC_ED_KEY= SPARKLE_FEED_URL= ./script/install_app.sh
+
+release:
+	./script/release.sh $(VERSION)
+
+release-upload:
+	./script/release.sh $(VERSION) --upload
+
+release-test:
+	RELEASE_DIR=dist/test-releases SPARKLE_PUBLIC_ED_KEY=dry-run-public-key NOTARY_PROFILE= ./script/release.sh $(VERSION) --no-upload --no-appcast --no-git-check --yes
+
+release-config:
+	@printf "Sparkle public EdDSA key: "; read -r sparkle_key; \
+	printf "Notary profile [KEFCompanion, '-' skips]: "; read -r notary_profile; \
+	if [ -z "$$notary_profile" ]; then notary_profile="KEFCompanion"; fi; \
+	if [ "$$notary_profile" = "-" ]; then notary_profile=""; fi; \
+	{ \
+		echo "SPARKLE_PUBLIC_ED_KEY=$$sparkle_key"; \
+		echo "NOTARY_PROFILE=$$notary_profile"; \
+	} > .env.release; \
+	echo "Wrote .env.release"
+
+sparkle-key: release-build
+	.build/artifacts/sparkle/Sparkle/bin/generate_keys
+
+notary-profile:
+	xcrun notarytool store-credentials KEFCompanion
+
+release-package:
+	$(MAKE) release VERSION=$(VERSION)
+
+clean:
+	swift package clean
+	rm -rf "KEF Companion.app" dist
