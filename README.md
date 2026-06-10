@@ -13,6 +13,10 @@ Open the DMG, then drag `KEF Companion.app` into `Applications`.
 
 ## Compatibility
 
+KEF Companion supports macOS 14 or later. Current development and release
+testing is primarily done on macOS 26 and later; if you use macOS 14 or 15,
+please report any launch, permissions, networking, or UI issues.
+
 KEF Companion works with KEF speakers that expose the local HTTP control API:
 
 - KEF LS50 Wireless II
@@ -83,6 +87,13 @@ Contributor commands:
 - `make dev-fresh` resets, rebuilds, and launches a fresh development app.
 - `make app` stages `dist/KEF Companion.app`.
 - `make clean` removes build artifacts.
+
+Use the `make` commands or `./script/swift.sh ...` for local SwiftPM work in
+this repository. On some macOS/Xcode beta setups, raw `swift ...` can resolve to
+a broken Command Line Tools SwiftPM install; the wrapper selects a working Xcode
+toolchain. Prefer `make run` over `swift run` for manual testing, because it
+launches a signed `.app` bundle with Info.plist and embedded frameworks rather
+than a bare executable.
 
 Maintainer release instructions live in [docs/RELEASING.md](docs/RELEASING.md).
 

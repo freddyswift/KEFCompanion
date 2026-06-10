@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Settings window for connection management, volume behavior, media-key
+/// permissions, and update status.
+///
+/// Most rows bind directly to `AppState`. Temporary UI-only state, such as the
+/// manual host text field and the last connection-test result, stays local to
+/// this view so partially typed settings are not persisted until validation
+/// succeeds.
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var updateController: UpdateController
@@ -504,6 +511,9 @@ struct SettingsView: View {
     }
 
     private func refreshDiscoveryIfNeeded() {
+        // Opening Settings is a strong signal that the user is trying to choose
+        // a speaker, so start a scan if auto-discovery is enabled and no
+        // current results are available.
         guard appState.useAutoDiscovery,
               appState.discovery.speakers.isEmpty,
               !appState.discovery.isSearching else {
@@ -726,6 +736,8 @@ struct SettingsView: View {
         let host = ipField.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
 
+        // Validate before persisting. This prevents malformed hosts from
+        // becoming the startup connection target in `AppState.startConnection`.
         guard let normalizedHost = ManualHostValidator.normalizedHost(host) else {
             testResult = .failure("Enter a private local IP address or .local host.")
             return

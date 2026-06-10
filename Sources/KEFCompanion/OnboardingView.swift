@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// First-run panel that resolves the two setup requirements: finding a speaker
+/// and choosing keyboard-volume behavior. It exits automatically once the
+/// stored app state no longer needs onboarding.
 struct OnboardingView: View {
     @EnvironmentObject var appState: AppState
 

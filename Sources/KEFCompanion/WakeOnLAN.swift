@@ -1,25 +1,14 @@
 import Darwin
 import Foundation
 
+/// Sends a Wake-on-LAN magic packet to the local broadcast address.
+///
+/// The packet format is deterministic: 6 bytes of `0xFF`, followed by the
+/// target MAC address repeated 16 times. `makeWakeOnLANMagicPacket` is separate
+/// from socket I/O so packet construction can be tested without touching the
+/// network.
 func sendWakeOnLAN(macAddress: String) -> Bool {
-    let hex = macAddress
-        .replacingOccurrences(of: ":", with: "")
-        .replacingOccurrences(of: "-", with: "")
-    guard hex.count == 12 else { return false }
-
-    var macBytes = [UInt8]()
-    var index = hex.startIndex
-    for _ in 0..<6 {
-        let next = hex.index(index, offsetBy: 2)
-        guard let byte = UInt8(hex[index..<next], radix: 16) else { return false }
-        macBytes.append(byte)
-        index = next
-    }
-
-    var packet = [UInt8](repeating: 0xFF, count: 6)
-    for _ in 0..<16 {
-        packet.append(contentsOf: macBytes)
-    }
+    guard let packet = makeWakeOnLANMagicPacket(macAddress: macAddress) else { return false }
 
     let socketFileDescriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     guard socketFileDescriptor >= 0 else { return false }
@@ -55,4 +44,27 @@ func sendWakeOnLAN(macAddress: String) -> Bool {
     }
 
     return sentByteCount == packet.count
+}
+
+func makeWakeOnLANMagicPacket(macAddress: String) -> [UInt8]? {
+    let hex = macAddress
+        .replacingOccurrences(of: ":", with: "")
+        .replacingOccurrences(of: "-", with: "")
+    guard hex.count == 12 else { return nil }
+
+    var macBytes = [UInt8]()
+    var index = hex.startIndex
+    for _ in 0..<6 {
+        let next = hex.index(index, offsetBy: 2)
+        guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+        macBytes.append(byte)
+        index = next
+    }
+
+    var packet = [UInt8](repeating: 0xFF, count: 6)
+    for _ in 0..<16 {
+        packet.append(contentsOf: macBytes)
+    }
+
+    return packet
 }

@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+/// Primary menu-bar panel.
+///
+/// This view is intentionally state-driven and thin: it renders connection,
+/// power, source, playback, and volume controls from `AppState`, while network
+/// side effects stay in the state/controller layer.
 struct SpeakerMenuView: View {
     private let groupedShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
@@ -59,6 +64,9 @@ struct SpeakerMenuView: View {
         transaction.disablesAnimations = true
         transaction.animation = nil
 
+        // Menu-bar popovers can look unstable when SwiftUI animates between
+        // very different content heights. Switching panels without animation
+        // keeps the window sizing deterministic.
         withTransaction(transaction) {
             panel = newPanel
         }

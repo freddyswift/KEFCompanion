@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Reusable settings group. It intentionally keeps styling local to the app
+/// rather than relying on a full design system, because the entire UI surface is
+/// a compact menu-bar utility.
 struct SettingsSection<Content: View>: View {
     let title: String
     let systemImage: String
@@ -41,6 +44,9 @@ struct SettingsSection<Content: View>: View {
     }
 }
 
+/// Small status row used across onboarding, settings, and disconnected states.
+/// The accessory slot keeps rows visually consistent while allowing buttons,
+/// progress indicators, or no trailing content.
 struct StatusRow<Accessory: View>: View {
     let title: String
     let detail: String?

@@ -8,6 +8,8 @@ struct KEFCompanionApp: App {
     @StateObject private var updateController = UpdateController()
 
     var body: some Scene {
+        // `MenuBarExtra` is the primary UI. The app uses accessory activation so
+        // it behaves like a menu-bar utility rather than a document app.
         MenuBarExtra {
             SpeakerMenuView()
                 .environmentObject(appState)

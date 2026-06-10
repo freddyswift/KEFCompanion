@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SWIFT="$ROOT_DIR/script/swift.sh"
 APP_NAME="KEFCompanion"
 APP_DISPLAY_NAME="KEF Companion"
 APPCAST_ASSET_NAME="sparkle-appcast.xml"
@@ -122,7 +123,7 @@ generate_sparkle_appcast() {
   local appcast_tool="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
 
   if [[ ! -x "$appcast_tool" ]]; then
-    swift build -c release
+    "$SWIFT" build -c release
   fi
 
   appcast_input_dir="$(mktemp -d "$ROOT_DIR/dist/appcast-input.XXXXXX")"

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SWIFT="$ROOT_DIR/script/swift.sh"
 APP_DISPLAY_NAME="KEF Companion"
 APP_EXECUTABLE="KEFCompanion"
 APP_DIR="$ROOT_DIR/dist/$APP_DISPLAY_NAME.app"
@@ -196,8 +197,8 @@ if [[ "$install_after_build" == true ]] && pgrep -x "$APP_EXECUTABLE" >/dev/null
 fi
 
 echo "Building $APP_DISPLAY_NAME.app from source..."
-swift build -c release
-BIN_DIR="$(swift build -c release --show-bin-path)"
+"$SWIFT" build -c release
+BIN_DIR="$("$SWIFT" build -c release --show-bin-path)"
 
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS_DIR/MacOS"

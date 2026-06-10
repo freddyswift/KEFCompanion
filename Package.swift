@@ -18,6 +18,14 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]
+        ),
+        .testTarget(
+            name: "KEFCompanionTests",
+            dependencies: ["KEFCompanion"],
+            path: "Tests/KEFCompanionTests",
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."])
+            ]
         )
     ]
 )

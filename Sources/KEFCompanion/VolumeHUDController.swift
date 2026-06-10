@@ -17,6 +17,9 @@ final class VolumeHUDController {
     private var presentationID = 0
     private lazy var panel: NSPanel = makePanel()
 
+    /// Shows or refreshes the transient HUD. `presentationID` prevents an older
+    /// dismissal task from hiding a newer HUD presentation after rapid volume
+    /// key repeats.
     func show(title: String, volume: Int) {
         presentationID += 1
         let currentPresentationID = presentationID
@@ -58,6 +61,8 @@ final class VolumeHUDController {
     }
 
     private func makePanel() -> NSPanel {
+        // A non-activating borderless panel lets the HUD appear above other apps
+        // without stealing focus from the foreground application.
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: VolumeHUDLayout.width, height: VolumeHUDLayout.height),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -86,6 +91,9 @@ final class VolumeHUDController {
     }
 
     private var fallbackScreen: NSScreen? {
+        // Prefer the screen under the cursor; that matches where users expect
+        // menu-bar utilities and transient controls to appear on multi-display
+        // setups.
         let mouseLocation = NSEvent.mouseLocation
         return NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) } ?? NSScreen.main
     }

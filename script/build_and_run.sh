@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SWIFT="$ROOT_DIR/script/swift.sh"
 BINARY_NAME="KEFCompanion"
 BASE_BUNDLE_NAME="KEF Companion"
 BASE_BUNDLE_IDENTIFIER="com.freddyswift.KEFCompanion"
@@ -111,9 +112,9 @@ fi
 
 swift_build() {
   if [[ "$CONFIGURATION" == "release" ]]; then
-    swift build -c release "$@"
+    "$SWIFT" build -c release "$@"
   else
-    swift build "$@"
+    "$SWIFT" build "$@"
   fi
 }
 

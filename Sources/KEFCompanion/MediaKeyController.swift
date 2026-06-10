@@ -40,6 +40,8 @@ final class MediaKeyController {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
+    /// `onVolumeDelta` returns whether the app consumed the event. Returning
+    /// false lets macOS handle the original volume key event normally.
     init(onVolumeDelta: @escaping (Int) -> Bool) {
         self.onVolumeDelta = onVolumeDelta
     }
@@ -76,6 +78,9 @@ final class MediaKeyController {
     private func installEventTap() {
         guard eventTap == nil else { return }
 
+        // Media keys arrive as system-defined events. The event tap needs both
+        // Input Monitoring to observe keys and Accessibility to suppress events
+        // when KEF volume routing is active.
         let eventMask = CGEventMask(1 << MediaKey.eventType)
         guard let eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -126,6 +131,8 @@ final class MediaKeyController {
         guard let nsEvent = NSEvent(cgEvent: event) else { return nil }
         guard nsEvent.subtype.rawValue == MediaKey.eventSubtype else { return nil }
 
+        // Apple exposes media key details in the packed `data1` field. The high
+        // word is the key code; the low word contains key up/down/repeat flags.
         let data = Int(nsEvent.data1)
         let keyCode = (data & 0xFFFF0000) >> 16
         let keyFlags = data & 0x0000FFFF

@@ -1,5 +1,10 @@
 import Foundation
 
+/// Validates manual speaker hosts before the app attempts a network request.
+///
+/// The app controls only local speakers, so public IPs and URL-like strings are
+/// rejected. This reduces accidental requests to arbitrary hosts and keeps the
+/// settings UI focused on private LAN addresses or Bonjour `.local` names.
 enum ManualHostValidator {
     static func normalizedHost(_ host: String) -> String? {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)

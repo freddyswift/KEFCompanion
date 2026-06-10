@@ -15,6 +15,9 @@ final class UpdateController: NSObject, ObservableObject {
     private var updaterController: SPUStandardUpdaterController?
     private var canCheckObservation: NSKeyValueObservation?
 
+    /// Sparkle is configured only in signed release builds. Source builds leave
+    /// the feed URL and public key empty, so this controller reports local-build
+    /// state and keeps the "Check Now" button disabled.
     override init() {
         super.init()
 

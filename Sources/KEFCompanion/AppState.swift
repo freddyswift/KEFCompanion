@@ -3,6 +3,9 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
+    /// Media-key permissions are modeled separately from the chosen routing
+    /// mode. A user can request KEF routing while macOS still blocks the event
+    /// tap, so the UI needs to represent both preference and permission state.
     enum MediaKeyAccessState {
         case unknown
         case working
@@ -12,8 +15,6 @@ final class AppState: ObservableObject {
         case accessibilityDenied
         case failedToActivate
     }
-
-    private static let allowedVolumeStepBounds = 1...25
 
     // Connection
     @Published var isConnected = false
@@ -52,11 +53,11 @@ final class AppState: ObservableObject {
     // Discovery
     let discovery = KEFDiscovery()
 
-    // Internal
-    private var speaker: KEFSpeakerAPI?
+    // Internal controllers and task state. `AppState` remains the app-facing
+    // coordinator, but long-lived loops and pure policies live in smaller types.
+    private var speaker: KEFSpeakerClient?
     private var connectionTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
-    private var playbackStateTask: Task<Void, Never>?
+    private let pollingController = SpeakerPollingController()
     private var consecutiveRefreshFailures = 0
     private var pendingCommittedVolume: Int?
     private var pendingVolumeResetTask: Task<Void, Never>?
@@ -84,7 +85,7 @@ final class AppState: ObservableObject {
     }
 
     var allowedVolumeStepRange: ClosedRange<Int> {
-        Self.allowedVolumeStepBounds
+        VolumePolicy.allowedStepRange
     }
 
     var useFixedVolumeSteps: Bool {
@@ -117,7 +118,11 @@ final class AppState: ObservableObject {
     }
 
     private static func clampedVolumeStep(_ step: Int) -> Int {
-        min(max(step, allowedVolumeStepBounds.lowerBound), allowedVolumeStepBounds.upperBound)
+        VolumePolicy.clampedStepSize(step)
+    }
+
+    private var volumePolicy: VolumePolicy {
+        VolumePolicy(usesFixedSteps: useFixedVolumeSteps, stepSize: volumeStepSize)
     }
 
     func setVolumeHUDSuppressed(_ suppressed: Bool) {
@@ -331,10 +336,7 @@ final class AppState: ObservableObject {
         connectionTask?.cancel()
         connectionTask = nil
         discovery.stopDiscovery()
-        pollTask?.cancel()
-        pollTask = nil
-        playbackStateTask?.cancel()
-        playbackStateTask = nil
+        pollingController.stop()
         speaker = nil
         isConnected = false
         isReconnecting = false
@@ -400,42 +402,36 @@ final class AppState: ObservableObject {
     // MARK: - Polling
 
     private func startPolling() {
-        pollTask?.cancel()
-        pollTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled else { break }
-                await refresh()
+        pollingController.start(
+            refresh: { [weak self] in
+                await self?.refresh()
+            },
+            refreshPlaybackStateForVolumeRouting: { [weak self] in
+                await self?.refreshPlaybackStateForVolumeRouting()
             }
-        }
-
-        startPlaybackStateWatcher()
+        )
     }
 
-    private func startPlaybackStateWatcher() {
-        playbackStateTask?.cancel()
-        playbackStateTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(750))
-                guard !Task.isCancelled else { break }
-                guard volumeKeyRoutingMode == .auto,
-                      source.usesPlaybackStateForVolumeRouting,
-                      status == .powerOn,
-                      let speaker else {
-                    continue
-                }
+    /// Auto routing needs fresher playback state than the full 3-second refresh.
+    /// This lightweight poll only runs when the current source uses playback
+    /// state to decide whether volume keys should control the speaker or macOS.
+    private func refreshPlaybackStateForVolumeRouting() async {
+        guard volumeKeyRoutingMode == .auto,
+              source.usesPlaybackStateForVolumeRouting,
+              status == .powerOn,
+              let speaker else {
+            return
+        }
 
-                do {
-                    let refreshedIsPlaying = try await speaker.getIsPlaying()
-                    guard self.speaker === speaker else { continue }
-                    updateIfChanged(\.isPlaying, refreshedIsPlaying)
-                    if !refreshedIsPlaying {
-                        updateIfChanged(\.nowPlaying, nil)
-                    }
-                } catch {
-                    guard self.speaker === speaker else { continue }
-                }
+        do {
+            let refreshedIsPlaying = try await speaker.getIsPlaying()
+            guard self.speaker === speaker else { return }
+            updateIfChanged(\.isPlaying, refreshedIsPlaying)
+            if !refreshedIsPlaying {
+                updateIfChanged(\.nowPlaying, nil)
             }
+        } catch {
+            guard self.speaker === speaker else { return }
         }
     }
 
@@ -491,7 +487,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func markConnectionHealthy(for speaker: KEFSpeakerAPI, stopDiscovery: Bool = false) {
+    private func markConnectionHealthy(for speaker: KEFSpeakerClient, stopDiscovery: Bool = false) {
         guard self.speaker === speaker else { return }
 
         consecutiveRefreshFailures = 0
@@ -505,7 +501,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func recordConnectionFailure(for speaker: KEFSpeakerAPI) {
+    private func recordConnectionFailure(for speaker: KEFSpeakerClient) {
         guard self.speaker === speaker else { return }
 
         consecutiveRefreshFailures += 1
@@ -535,7 +531,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Actions
 
-    private func runSpeakerAction(_ action: @escaping (KEFSpeakerAPI) async throws -> Void) {
+    private func runSpeakerAction(_ action: @escaping (KEFSpeakerClient) async throws -> Void) {
         guard let speaker else { return }
 
         Task {
@@ -547,7 +543,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func runBusySpeakerAction(_ action: @escaping (KEFSpeakerAPI) async throws -> Void) {
+    private func runBusySpeakerAction(_ action: @escaping (KEFSpeakerClient) async throws -> Void) {
         guard let speaker else { return }
 
         isBusy = true
@@ -561,7 +557,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func handleSpeakerActionError(_ error: Error, for speaker: KEFSpeakerAPI) async {
+    private func handleSpeakerActionError(_ error: Error, for speaker: KEFSpeakerClient) async {
         guard self.speaker === speaker else { return }
 
         if await speaker.testConnection() {
@@ -573,7 +569,7 @@ final class AppState: ObservableObject {
     }
 
     func commitVolume(_ newVolume: Int) {
-        let clampedVolume = normalizedVolume(newVolume)
+        let clampedVolume = volumePolicy.normalizedVolume(newVolume)
         volume = clampedVolume
         displayedVolume = clampedVolume
         pendingCommittedVolume = clampedVolume
@@ -609,7 +605,7 @@ final class AppState: ObservableObject {
     private func adjustVolume(by delta: Int) {
         let direction = delta.signum()
         guard direction != 0 else { return }
-        commitVolume(nextVolume(from: displayedVolume, direction: direction))
+        commitVolume(volumePolicy.nextVolume(from: displayedVolume, direction: direction))
     }
 
     private var volumeHUDTitle: String {
@@ -668,42 +664,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Volume
+    // MARK: - Volume reconciliation
 
-    private func normalizedVolume(_ newVolume: Int) -> Int {
-        let clampedVolume = max(0, min(100, newVolume))
-        guard useFixedVolumeSteps else { return clampedVolume }
-
-        let step = volumeStepSize
-        guard step > 1 else { return clampedVolume }
-
-        let roundedVolume = Int((Double(clampedVolume) / Double(step)).rounded()) * step
-        return max(0, min(100, roundedVolume))
-    }
-
-    private func nextVolume(from currentVolume: Int, direction: Int) -> Int {
-        let clampedVolume = max(0, min(100, currentVolume))
-        guard useFixedVolumeSteps else {
-            return max(0, min(100, clampedVolume + direction))
-        }
-
-        let step = volumeStepSize
-        guard step > 1 else {
-            return max(0, min(100, clampedVolume + direction))
-        }
-
-        if direction > 0 {
-            guard clampedVolume < 100 else { return 100 }
-            return min(100, ((clampedVolume / step) + 1) * step)
-        }
-
-        guard clampedVolume > 0 else { return 0 }
-        let previousStep = clampedVolume.isMultiple(of: step)
-            ? clampedVolume - step
-            : (clampedVolume / step) * step
-        return max(0, previousStep)
-    }
-
+    /// Keep the UI optimistic after a local volume change. Speakers can report
+    /// their old volume for a short period after `setVolume`; this prevents the
+    /// slider and HUD from bouncing backward while the command is settling.
     private func syncDisplayedVolume(with remoteVolume: Int) {
         if let pendingCommittedVolume {
             if remoteVolume == pendingCommittedVolume {

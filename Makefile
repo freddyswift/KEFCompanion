@@ -1,5 +1,15 @@
 CODESIGN_IDENTITY ?= -
 VERSION ?=
+SWIFT ?= ./script/swift.sh
+SDK ?=
+
+ifeq ($(SDK),26.5)
+export DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
+else ifeq ($(SDK),27)
+export DEVELOPER_DIR := /Applications/Xcode-beta.app/Contents/Developer
+else ifneq ($(SDK),)
+$(error SDK must be 26.5 or 27)
+endif
 
 -include .env.release
 
@@ -9,10 +19,11 @@ export NOTARY_PROFILE
 .PHONY: build check run dev-reset dev-reset-hard dev-fresh dev-fresh-hard release-build release release-upload release-test release-config sparkle-key notary-profile app install release-package clean
 
 build:
-	swift build
+	$(SWIFT) build
 
 check:
-	swift build -Xswiftc -warnings-as-errors
+	$(SWIFT) build -Xswiftc -warnings-as-errors
+	$(SWIFT) test
 	for f in script/*.sh; do bash -n "$$f"; done
 	plutil -lint Sources/KEFCompanion/Info.plist
 
@@ -32,7 +43,7 @@ dev-fresh-hard: dev-reset-hard
 	./script/build_and_run.sh
 
 release-build:
-	swift build -c release
+	$(SWIFT) build -c release
 
 app:
 	SPARKLE_PUBLIC_ED_KEY= SPARKLE_FEED_URL= CODESIGN_IDENTITY="$(CODESIGN_IDENTITY)" ./script/install_app.sh --stage-only
@@ -70,5 +81,5 @@ release-package:
 	$(MAKE) release VERSION=$(VERSION)
 
 clean:
-	swift package clean
+	$(SWIFT) package clean
 	rm -rf "KEF Companion.app" dist

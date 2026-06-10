@@ -1,5 +1,28 @@
 import Foundation
 
+/// Protocol used by `AppState` and settings code instead of depending directly
+/// on a concrete network client. Tests can use lightweight fakes when exercising
+/// connection and action flow.
+protocol KEFSpeakerClient: AnyObject, Sendable {
+    var host: String { get }
+
+    func getStatus() async throws -> SpeakerStatus
+    func getSource() async throws -> SpeakerSource
+    func getVolume() async throws -> Int
+    func getSpeakerName() async throws -> String
+    func getModel() async throws -> String
+    func getIsPlaying() async throws -> Bool
+    func getNowPlayingInfo() async throws -> NowPlayingInfo
+    func setVolume(_ volume: Int) async throws
+    func setSource(_ source: SpeakerSource) async throws
+    func powerOn() async throws
+    func shutdown() async throws
+    func togglePlayPause() async throws
+    func nextTrack() async throws
+    func previousTrack() async throws
+    func testConnection() async -> Bool
+}
+
 final class KEFSpeakerAPI: Sendable {
     private static let postSetDataModels: Set<String> = ["LS50WII", "LSXII", "LSXIILT"]
     private static let modelAliases: [String: String] = [
@@ -10,6 +33,8 @@ final class KEFSpeakerAPI: Sendable {
 
     let host: String
     private let session: URLSession
+    private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
 
     init(host: String) {
         self.host = host
@@ -22,7 +47,7 @@ final class KEFSpeakerAPI: Sendable {
 
     // MARK: - Low-level API
 
-    private func getData(path: String, roles: String = "value") async throws -> [[String: Any]] {
+    private func getData(path: String, roles: String = "value") async throws -> [KEFDataEntry] {
         guard var components = URLComponents(string: "http://\(host)/api/getData") else {
             throw KEFError.connectionFailed
         }
@@ -32,20 +57,17 @@ final class KEFSpeakerAPI: Sendable {
         ]
         guard let url = components.url else { throw KEFError.connectionFailed }
         let data = try await data(from: url)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            throw KEFError.invalidResponse
-        }
-        return json
+        return try Self.decodeDataEntries(data, decoder: decoder)
     }
 
-    private func firstData(path: String, roles: String = "value") async throws -> [String: Any] {
+    private func firstData(path: String, roles: String = "value") async throws -> KEFDataEntry {
         guard let first = try await getData(path: path, roles: roles).first else {
             throw KEFError.invalidResponse
         }
         return first
     }
 
-    private func setData(path: String, roles: String = "value", value: [String: Any]) async throws {
+    private func setData(path: String, roles: String = "value", value: KEFSetValue) async throws {
         if try await usesPostForSetData() {
             try await postSetData(path: path, roles: roles, value: value)
         } else {
@@ -53,11 +75,11 @@ final class KEFSpeakerAPI: Sendable {
         }
     }
 
-    private func getSetData(path: String, roles: String, value: [String: Any]) async throws {
+    private func getSetData(path: String, roles: String, value: KEFSetValue) async throws {
         guard var components = URLComponents(string: "http://\(host)/api/setData") else {
             throw KEFError.connectionFailed
         }
-        let valueData = try JSONSerialization.data(withJSONObject: value)
+        let valueData = try encoder.encode(value)
         guard let valueString = String(data: valueData, encoding: .utf8) else {
             throw KEFError.invalidResponse
         }
@@ -71,18 +93,14 @@ final class KEFSpeakerAPI: Sendable {
         try validateSetDataResponse(data)
     }
 
-    private func postSetData(path: String, roles: String, value: [String: Any]) async throws {
+    private func postSetData(path: String, roles: String, value: KEFSetValue) async throws {
         guard let url = URL(string: "http://\(host)/api/setData") else {
             throw KEFError.connectionFailed
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "path": path,
-            "roles": roles,
-            "value": value,
-        ])
+        request.httpBody = try encoder.encode(KEFSetDataRequest(path: path, roles: roles, value: value))
 
         let (data, response) = try await session.data(for: request)
         try validateHTTPResponse(response)
@@ -107,10 +125,9 @@ final class KEFSpeakerAPI: Sendable {
 
     private func validateSetDataResponse(_ data: Data) throws {
         guard !data.isEmpty else { return }
-        let response = try JSONSerialization.jsonObject(with: data)
-        if let responseObject = response as? [String: Any],
-           let error = responseObject["error"] as? [String: Any] {
-            let message = error["message"] as? String ?? "Speaker rejected command"
+        let response = try decoder.decode(KEFSetDataResponse.self, from: data)
+        if let error = response.error {
+            let message = error.message ?? "Speaker rejected command"
             throw KEFError.apiError(message)
         }
     }
@@ -125,51 +142,51 @@ final class KEFSpeakerAPI: Sendable {
 
     func getStatus() async throws -> SpeakerStatus {
         let data = try await firstData(path: "settings:/kef/host/speakerStatus")
-        let raw = data["kefSpeakerStatus"] as? String ?? "standby"
+        let raw = data.string("kefSpeakerStatus") ?? "standby"
         return SpeakerStatus(rawValue: raw) ?? .standby
     }
 
     func getSource() async throws -> SpeakerSource {
         let data = try await firstData(path: "settings:/kef/play/physicalSource")
-        let raw = data["kefPhysicalSource"] as? String ?? "standby"
+        let raw = data.string("kefPhysicalSource") ?? "standby"
         return SpeakerSource(rawValue: raw) ?? .wifi
     }
 
     func getVolume() async throws -> Int {
         let data = try await firstData(path: "player:volume")
-        return data["i32_"] as? Int ?? 0
+        return data.int("i32_") ?? 0
     }
 
     func getSpeakerName() async throws -> String {
         let data = try await firstData(path: "settings:/deviceName")
-        return data["string_"] as? String ?? "KEF Speaker"
+        return data.string("string_") ?? "KEF Speaker"
     }
 
     func getModel() async throws -> String {
         let data = try await firstData(path: "settings:/releasetext")
-        let raw = data["string_"] as? String ?? ""
+        let raw = data.string("string_") ?? ""
         return raw.components(separatedBy: "_").first ?? raw
     }
 
-    func getPlayerData() async throws -> [String: Any] {
+    private func getPlayerData() async throws -> KEFDataEntry {
         try await firstData(path: "player:player/data")
     }
 
     func getIsPlaying() async throws -> Bool {
         let data = try await getPlayerData()
-        return (data["state"] as? String) == "playing"
+        return data.string("state") == "playing"
     }
 
     func getNowPlayingInfo() async throws -> NowPlayingInfo {
         let data = try await getPlayerData()
-        let trackRoles = data["trackRoles"] as? [String: Any] ?? [:]
-        let mediaData = trackRoles["mediaData"] as? [String: Any] ?? [:]
-        let metadata = mediaData["metaData"] as? [String: Any] ?? [:]
+        let trackRoles = data.object("trackRoles")
+        let mediaData = trackRoles?["mediaData"]?.objectValue
+        let metadata = mediaData?["metaData"]?.objectValue
 
         return NowPlayingInfo(
-            title: trackRoles["title"] as? String,
-            artist: metadata["artist"] as? String,
-            album: metadata["album"] as? String
+            title: trackRoles?["title"]?.stringValue,
+            artist: metadata?["artist"]?.stringValue,
+            album: metadata?["album"]?.stringValue
         )
     }
 
@@ -179,28 +196,28 @@ final class KEFSpeakerAPI: Sendable {
         let clamped = max(0, min(100, volume))
         try await setData(
             path: "player:volume",
-            value: ["type": "i32_", "i32_": clamped]
+            value: ["type": .string("i32_"), "i32_": .int(clamped)]
         )
     }
 
     func setSource(_ source: SpeakerSource) async throws {
         try await setData(
             path: "settings:/kef/play/physicalSource",
-            value: ["type": "kefPhysicalSource", "kefPhysicalSource": source.rawValue]
+            value: ["type": .string("kefPhysicalSource"), "kefPhysicalSource": .string(source.rawValue)]
         )
     }
 
     func powerOn() async throws {
         try await setData(
             path: "settings:/kef/play/physicalSource",
-            value: ["type": "kefPhysicalSource", "kefPhysicalSource": "powerOn"]
+            value: ["type": .string("kefPhysicalSource"), "kefPhysicalSource": .string("powerOn")]
         )
     }
 
     func shutdown() async throws {
         try await setData(
             path: "settings:/kef/play/physicalSource",
-            value: ["type": "kefPhysicalSource", "kefPhysicalSource": "standby"]
+            value: ["type": .string("kefPhysicalSource"), "kefPhysicalSource": .string("standby")]
         )
     }
 
@@ -208,7 +225,7 @@ final class KEFSpeakerAPI: Sendable {
         try await setData(
             path: "player:player/control",
             roles: "activate",
-            value: ["control": "pause"]
+            value: ["control": .string("pause")]
         )
     }
 
@@ -216,7 +233,7 @@ final class KEFSpeakerAPI: Sendable {
         try await setData(
             path: "player:player/control",
             roles: "activate",
-            value: ["control": "next"]
+            value: ["control": .string("next")]
         )
     }
 
@@ -224,7 +241,7 @@ final class KEFSpeakerAPI: Sendable {
         try await setData(
             path: "player:player/control",
             roles: "activate",
-            value: ["control": "previous"]
+            value: ["control": .string("previous")]
         )
     }
 
@@ -235,5 +252,177 @@ final class KEFSpeakerAPI: Sendable {
         } catch {
             return false
         }
+    }
+
+    static func decodeDataEntries(_ data: Data, decoder: JSONDecoder = JSONDecoder()) throws -> [KEFDataEntry] {
+        do {
+            return try decoder.decode([KEFDataEntry].self, from: data)
+        } catch {
+            throw KEFError.invalidResponse
+        }
+    }
+}
+
+extension KEFSpeakerAPI: KEFSpeakerClient {}
+
+typealias KEFSetValue = [String: KEFJSONValue]
+
+/// Flexible JSON value used at the KEF API boundary.
+///
+/// The speaker returns endpoint-specific keys such as `kefSpeakerStatus`,
+/// `i32_`, or nested `trackRoles`. Decoding into this enum preserves the dynamic
+/// shape at the edge while preventing untyped `[String: Any]` from spreading
+/// through the rest of the codebase.
+enum KEFJSONValue: Codable, Equatable, Sendable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case object([String: KEFJSONValue])
+    case array([KEFJSONValue])
+    case null
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value) where value.rounded() == value:
+            return Int(value)
+        default:
+            return nil
+        }
+    }
+
+    var objectValue: [String: KEFJSONValue]? {
+        guard case .object(let value) = self else { return nil }
+        return value
+    }
+
+    init(from decoder: Decoder) throws {
+        if let keyedContainer = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            var object: [String: KEFJSONValue] = [:]
+            for key in keyedContainer.allKeys {
+                object[key.stringValue] = try keyedContainer.decode(KEFJSONValue.self, forKey: key)
+            }
+            self = .object(object)
+            return
+        }
+
+        if var unkeyedContainer = try? decoder.unkeyedContainer() {
+            var array: [KEFJSONValue] = []
+            while !unkeyedContainer.isAtEnd {
+                array.append(try unkeyedContainer.decode(KEFJSONValue.self))
+            }
+            self = .array(array)
+            return
+        }
+
+        let singleValueContainer = try decoder.singleValueContainer()
+        if singleValueContainer.decodeNil() {
+            self = .null
+        } else if let value = try? singleValueContainer.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? singleValueContainer.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? singleValueContainer.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? singleValueContainer.decode(String.self) {
+            self = .string(value)
+        } else {
+            throw KEFError.invalidResponse
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .string(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .int(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .double(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .bool(let value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case .object(let value):
+            var container = encoder.container(keyedBy: DynamicCodingKey.self)
+            for (key, nestedValue) in value {
+                try container.encode(nestedValue, forKey: DynamicCodingKey(stringValue: key))
+            }
+        case .array(let value):
+            var container = encoder.unkeyedContainer()
+            for nestedValue in value {
+                try container.encode(nestedValue)
+            }
+        case .null:
+            var container = encoder.singleValueContainer()
+            try container.encodeNil()
+        }
+    }
+}
+
+struct KEFDataEntry: Decodable, Equatable, Sendable {
+    let values: [String: KEFJSONValue]
+
+    init(values: [String: KEFJSONValue]) {
+        self.values = values
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        var values: [String: KEFJSONValue] = [:]
+        for key in container.allKeys {
+            values[key.stringValue] = try container.decode(KEFJSONValue.self, forKey: key)
+        }
+        self.values = values
+    }
+
+    func string(_ key: String) -> String? {
+        values[key]?.stringValue
+    }
+
+    func int(_ key: String) -> Int? {
+        values[key]?.intValue
+    }
+
+    func object(_ key: String) -> [String: KEFJSONValue]? {
+        values[key]?.objectValue
+    }
+}
+
+private struct KEFSetDataRequest: Encodable {
+    var path: String
+    var roles: String
+    var value: KEFSetValue
+}
+
+private struct KEFSetDataResponse: Decodable {
+    struct ErrorPayload: Decodable {
+        var message: String?
+    }
+
+    var error: ErrorPayload?
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
     }
 }

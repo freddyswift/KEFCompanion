@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+/// Shared modifier for menu-bar popovers.
+///
+/// SwiftUI menu bar windows do not always resize themselves after conditional
+/// content changes. The embedded AppKit sizing view measures the rendered
+/// content and adjusts the window height while preserving the top edge, which
+/// avoids visible jumps near the menu bar.
 struct MenuPanelSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -24,6 +30,8 @@ enum PanelColors {
     static let rowFill = Color(nsColor: .separatorColor).opacity(0.07)
 }
 
+/// Fixed panel width used by both the main menu and Settings window so controls
+/// align consistently across surfaces.
 enum MenuPanelLayout {
     static let width: CGFloat = 336
 }
@@ -70,6 +78,9 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
             guard let window, bounds.width > 0, bounds.height > 0 else { return }
             guard let contentView = window.contentView else { return }
 
+            // Use both the content view's fitting size and the representable's
+            // measured bounds. SwiftUI sometimes reports the correct height in
+            // only one of these paths during state transitions.
             contentView.layoutSubtreeIfNeeded()
             let currentContentSize = contentView.bounds.size
             let fittingSize = contentView.fittingSize
@@ -95,6 +106,8 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
             frame.size = targetFrameSize
             frame.origin.y = topEdge - frame.height
 
+            // The menu bar anchors popovers by their top edge; preserving that
+            // edge keeps expanding/collapsing panels visually stable.
             window.setFrame(frame, display: true, animate: false)
         }
     }

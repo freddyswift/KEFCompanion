@@ -6,6 +6,7 @@ import Network
 final class KEFDiscovery: ObservableObject {
     @Published var speakers: [DiscoveredSpeaker] = []
     @Published var isSearching = false
+    @Published private(set) var lastError: String?
 
     private var httpBrowser: NWBrowser?
     private var raopBrowser: NWBrowser?
@@ -16,11 +17,16 @@ final class KEFDiscovery: ObservableObject {
         stopDiscovery()
         speakers = []
         discoveredMACs = [:]
+        lastError = nil
         isSearching = true
 
         let params = NWParameters()
         params.includePeerToPeer = true
 
+        // RAOP service names commonly include the hardware MAC address as
+        // `AABBCCDDEEFF@Speaker Name`. The HTTP API service does not include
+        // that MAC, so discovery watches both service families and joins them
+        // by normalized speaker name when both are visible.
         raopBrowser = NWBrowser(for: .bonjour(type: "_raop._tcp", domain: nil), using: params)
         raopBrowser?.browseResultsChangedHandler = { [weak self] results, _ in
             for result in results {
@@ -32,6 +38,11 @@ final class KEFDiscovery: ObservableObject {
                 }
             }
         }
+        raopBrowser?.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                self?.handleBrowserState(state, label: "RAOP")
+            }
+        }
         raopBrowser?.start(queue: .global())
 
         httpBrowser = NWBrowser(for: .bonjour(type: "_http._tcp", domain: nil), using: params)
@@ -41,6 +52,11 @@ final class KEFDiscovery: ObservableObject {
                       Self.isLikelyKEFSpeakerService(name) else { continue }
 
                 self?.resolveService(name: name, type: type, domain: domain)
+            }
+        }
+        httpBrowser?.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                self?.handleBrowserState(state, label: "HTTP")
             }
         }
         httpBrowser?.start(queue: .global())
@@ -63,9 +79,12 @@ final class KEFDiscovery: ObservableObject {
     }
 
     private func recordMAC(_ macAddress: String, for speakerName: String) {
-        discoveredMACs[speakerName] = macAddress
+        let normalizedName = Self.normalizedServiceName(speakerName)
+        discoveredMACs[normalizedName] = macAddress
 
-        guard let index = speakers.firstIndex(where: { $0.name == speakerName && $0.macAddress == nil }) else {
+        guard let index = speakers.firstIndex(where: {
+            Self.normalizedServiceName($0.name) == normalizedName && $0.macAddress == nil
+        }) else {
             return
         }
 
@@ -79,7 +98,8 @@ final class KEFDiscovery: ObservableObject {
     }
 
     private func addSpeaker(name: String, host: String) {
-        let macAddress = discoveredMACs[name]
+        let displayName = Self.displayName(fromServiceName: name)
+        let macAddress = discoveredMACs[Self.normalizedServiceName(name)]
 
         if let index = speakers.firstIndex(where: { $0.host == host }) {
             guard speakers[index].macAddress == nil, let macAddress else { return }
@@ -87,7 +107,7 @@ final class KEFDiscovery: ObservableObject {
             let speaker = speakers[index]
             speakers[index] = DiscoveredSpeaker(
                 id: speaker.id,
-                name: speaker.name,
+                name: displayName,
                 host: speaker.host,
                 macAddress: macAddress
             )
@@ -95,8 +115,22 @@ final class KEFDiscovery: ObservableObject {
         }
 
         speakers.append(
-            DiscoveredSpeaker(id: name, name: name, host: host, macAddress: macAddress)
+            DiscoveredSpeaker(id: host, name: displayName, host: host, macAddress: macAddress)
         )
+    }
+
+    private func handleBrowserState(_ state: NWBrowser.State, label: String) {
+        Task { @MainActor in
+            switch state {
+            case .failed(let error):
+                lastError = "\(label) discovery failed: \(error.localizedDescription)"
+                isSearching = false
+            case .cancelled:
+                break
+            default:
+                break
+            }
+        }
     }
 
     /// Resolve a Bonjour service to an IPv4 address using dns_sd APIs.
@@ -109,26 +143,24 @@ final class KEFDiscovery: ObservableObject {
             guard let hostname = Self.resolveServiceHostname(name: name, type: type, domain: domain) else {
                 return
             }
-            guard let ipv4 = Self.resolveToIPv4(hostname) else {
-                return
-            }
+            let host = Self.resolveToIPv4(hostname) ?? hostname
 
             Task { @MainActor in
                 guard let self else { return }
-                self.addSpeaker(name: name, host: ipv4)
+                self.addSpeaker(name: name, host: host)
             }
         }
     }
 
-    nonisolated private static func isLikelyKEFSpeakerService(_ name: String) -> Bool {
-        let uppercasedName = name.uppercased()
+    nonisolated static func isLikelyKEFSpeakerService(_ name: String) -> Bool {
+        let uppercasedName = normalizedServiceName(name).uppercased()
         return uppercasedName.contains("LSX") ||
             uppercasedName.contains("LS50") ||
             uppercasedName.contains("LS60") ||
             uppercasedName.contains("KEF")
     }
 
-    nonisolated private static func parseRAOPServiceName(_ name: String) -> (speakerName: String, macAddress: String)? {
+    nonisolated static func parseRAOPServiceName(_ name: String) -> (speakerName: String, macAddress: String)? {
         guard isLikelyKEFSpeakerService(name),
               let separatorIndex = name.firstIndex(of: "@") else {
             return nil
@@ -151,8 +183,20 @@ final class KEFDiscovery: ObservableObject {
         return (speakerName, macAddress)
     }
 
+    nonisolated static func normalizedServiceName(_ name: String) -> String {
+        displayName(fromServiceName: name)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .lowercased()
+    }
+
+    nonisolated static func displayName(fromServiceName name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Use DNSServiceResolve to get the .local hostname for a Bonjour service.
-    nonisolated private static func resolveServiceHostname(name: String, type: String, domain: String) -> String? {
+    nonisolated static func resolveServiceHostname(name: String, type: String, domain: String) -> String? {
         class Box { var value: String? }
         let box = Box()
         var sdRef: DNSServiceRef?
@@ -182,11 +226,11 @@ final class KEFDiscovery: ObservableObject {
             DNSServiceProcessResult(sdRef)
         }
 
-        return box.value
+        return box.value.map(normalizedHostname)
     }
 
     /// Use getaddrinfo to resolve a hostname to an IPv4 address.
-    nonisolated private static func resolveToIPv4(_ hostname: String) -> String? {
+    nonisolated static func resolveToIPv4(_ hostname: String) -> String? {
         var hints = addrinfo()
         hints.ai_family = AF_INET
         hints.ai_socktype = SOCK_STREAM
@@ -205,5 +249,13 @@ final class KEFDiscovery: ObservableObject {
         ) == 0 else { return nil }
 
         return String(cString: buf)
+    }
+
+    nonisolated static func normalizedHostname(_ hostname: String) -> String {
+        var normalized = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        while normalized.hasSuffix(".") {
+            normalized.removeLast()
+        }
+        return normalized.lowercased()
     }
 }
