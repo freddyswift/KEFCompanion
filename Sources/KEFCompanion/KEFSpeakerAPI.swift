@@ -6,11 +6,13 @@ import Foundation
 protocol KEFSpeakerClient: AnyObject, Sendable {
     var host: String { get }
 
+    func getSnapshot() async throws -> SpeakerSnapshot
     func getStatus() async throws -> SpeakerStatus
     func getSource() async throws -> SpeakerSource
     func getVolume() async throws -> Int
     func getSpeakerName() async throws -> String
     func getModel() async throws -> String
+    func getPlayerState() async throws -> PlayerState
     func getIsPlaying() async throws -> Bool
     func getNowPlayingInfo() async throws -> NowPlayingInfo
     func setVolume(_ volume: Int) async throws
@@ -33,8 +35,9 @@ final class KEFSpeakerAPI: Sendable {
 
     let host: String
     private let session: URLSession
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
+    private let modelCache = LockedValue<String?>(nil)
+    private let setDataUsesPostCache = LockedValue<Bool?>(nil)
+    private let supportsBatchedGetDataCache = LockedValue<Bool?>(nil)
 
     init(host: String) {
         self.host = host
@@ -57,7 +60,12 @@ final class KEFSpeakerAPI: Sendable {
         ]
         guard let url = components.url else { throw KEFError.connectionFailed }
         let data = try await data(from: url)
-        return try Self.decodeDataEntries(data, decoder: decoder)
+        return try Self.decodeDataEntries(data)
+    }
+
+    private func getData(paths: [String], roles: String = "value") async throws -> [KEFDataEntry] {
+        guard !paths.isEmpty else { return [] }
+        return try await getData(path: paths.joined(separator: ","), roles: roles)
     }
 
     private func firstData(path: String, roles: String = "value") async throws -> KEFDataEntry {
@@ -79,7 +87,7 @@ final class KEFSpeakerAPI: Sendable {
         guard var components = URLComponents(string: "http://\(host)/api/setData") else {
             throw KEFError.connectionFailed
         }
-        let valueData = try encoder.encode(value)
+        let valueData = try JSONEncoder().encode(value)
         guard let valueString = String(data: valueData, encoding: .utf8) else {
             throw KEFError.invalidResponse
         }
@@ -100,7 +108,7 @@ final class KEFSpeakerAPI: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(KEFSetDataRequest(path: path, roles: roles, value: value))
+        request.httpBody = try JSONEncoder().encode(KEFSetDataRequest(path: path, roles: roles, value: value))
 
         let (data, response) = try await session.data(for: request)
         try validateHTTPResponse(response)
@@ -125,7 +133,7 @@ final class KEFSpeakerAPI: Sendable {
 
     private func validateSetDataResponse(_ data: Data) throws {
         guard !data.isEmpty else { return }
-        let response = try decoder.decode(KEFSetDataResponse.self, from: data)
+        let response = try JSONDecoder().decode(KEFSetDataResponse.self, from: data)
         if let error = response.error {
             let message = error.message ?? "Speaker rejected command"
             throw KEFError.apiError(message)
@@ -133,12 +141,76 @@ final class KEFSpeakerAPI: Sendable {
     }
 
     private func usesPostForSetData() async throws -> Bool {
+        if let cached = setDataUsesPostCache.value {
+            return cached
+        }
+
         let model = try await getModel()
         let normalizedModel = Self.modelAliases[model] ?? model
-        return Self.postSetDataModels.contains(normalizedModel)
+        let usesPost = Self.postSetDataModels.contains(normalizedModel)
+        setDataUsesPostCache.value = usesPost
+        return usesPost
     }
 
     // MARK: - Read
+
+    func getSnapshot() async throws -> SpeakerSnapshot {
+        if supportsBatchedGetDataCache.value != false {
+            do {
+                let snapshot = try await getBatchedSnapshot()
+                supportsBatchedGetDataCache.value = true
+                return snapshot
+            } catch KEFError.invalidResponse {
+                supportsBatchedGetDataCache.value = false
+            } catch {
+                throw error
+            }
+        }
+
+        return try await getUnbatchedSnapshot()
+    }
+
+    private func getBatchedSnapshot() async throws -> SpeakerSnapshot {
+        let entries = try await getData(paths: [
+            "settings:/kef/host/speakerStatus",
+            "settings:/kef/play/physicalSource",
+            "player:volume",
+            "settings:/deviceName",
+            "settings:/releasetext",
+        ])
+
+        guard entries.count >= 5 else { throw KEFError.invalidResponse }
+
+        let statusRaw = entries[0].string("kefSpeakerStatus") ?? "standby"
+        let sourceRaw = entries[1].string("kefPhysicalSource") ?? "standby"
+        let modelRaw = entries[4].string("string_") ?? ""
+        let model = Self.normalizedModelName(from: modelRaw)
+        modelCache.value = model
+
+        return SpeakerSnapshot(
+            status: SpeakerStatus(rawValue: statusRaw) ?? .standby,
+            source: SpeakerSource(rawValue: sourceRaw) ?? .wifi,
+            volume: entries[2].int("i32_") ?? 0,
+            name: entries[3].string("string_") ?? "KEF Speaker",
+            model: model
+        )
+    }
+
+    private func getUnbatchedSnapshot() async throws -> SpeakerSnapshot {
+        async let s = getStatus()
+        async let src = getSource()
+        async let vol = getVolume()
+        async let name = getSpeakerName()
+        async let model = getModel()
+
+        return try await SpeakerSnapshot(
+            status: s,
+            source: src,
+            volume: vol,
+            name: name,
+            model: model
+        )
+    }
 
     func getStatus() async throws -> SpeakerStatus {
         let data = try await firstData(path: "settings:/kef/host/speakerStatus")
@@ -163,9 +235,19 @@ final class KEFSpeakerAPI: Sendable {
     }
 
     func getModel() async throws -> String {
+        if let cached = modelCache.value {
+            return cached
+        }
+
         let data = try await firstData(path: "settings:/releasetext")
         let raw = data.string("string_") ?? ""
-        return raw.components(separatedBy: "_").first ?? raw
+        let model = Self.normalizedModelName(from: raw)
+        modelCache.value = model
+        return model
+    }
+
+    private static func normalizedModelName(from raw: String) -> String {
+        raw.components(separatedBy: "_").first ?? raw
     }
 
     private func getPlayerData() async throws -> KEFDataEntry {
@@ -173,20 +255,26 @@ final class KEFSpeakerAPI: Sendable {
     }
 
     func getIsPlaying() async throws -> Bool {
-        let data = try await getPlayerData()
-        return data.string("state") == "playing"
+        try await getPlayerState().isPlaying
     }
 
     func getNowPlayingInfo() async throws -> NowPlayingInfo {
+        try await getPlayerState().nowPlaying
+    }
+
+    func getPlayerState() async throws -> PlayerState {
         let data = try await getPlayerData()
         let trackRoles = data.object("trackRoles")
         let mediaData = trackRoles?["mediaData"]?.objectValue
         let metadata = mediaData?["metaData"]?.objectValue
 
-        return NowPlayingInfo(
-            title: trackRoles?["title"]?.stringValue,
-            artist: metadata?["artist"]?.stringValue,
-            album: metadata?["album"]?.stringValue
+        return PlayerState(
+            isPlaying: data.string("state") == "playing",
+            nowPlaying: NowPlayingInfo(
+                title: trackRoles?["title"]?.stringValue,
+                artist: metadata?["artist"]?.stringValue,
+                album: metadata?["album"]?.stringValue
+            )
         )
     }
 
@@ -264,6 +352,26 @@ final class KEFSpeakerAPI: Sendable {
 }
 
 extension KEFSpeakerAPI: KEFSpeakerClient {}
+
+final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Value
+
+    init(_ value: Value) {
+        storedValue = value
+    }
+
+    var value: Value {
+        get {
+            lock.withLock { storedValue }
+        }
+        set {
+            lock.withLock {
+                storedValue = newValue
+            }
+        }
+    }
+}
 
 typealias KEFSetValue = [String: KEFJSONValue]
 

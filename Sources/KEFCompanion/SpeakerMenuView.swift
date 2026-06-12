@@ -374,7 +374,7 @@ struct SpeakerMenuView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .panelFloatingGlassBackground(Capsule(style: .continuous), fillOpacity: 0.12, strokeOpacity: 0.16)
+        .panelSolidCardBackground(Capsule(style: .continuous), fillOpacity: 0.28, strokeOpacity: 0.16)
     }
 
     private var statusBadgeText: String {
@@ -479,7 +479,7 @@ struct SpeakerMenuView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .panelMaterialCardBackground(groupedShape, fillOpacity: 0.24, strokeOpacity: 0.14)
+        .panelSolidCardBackground(groupedShape, fillOpacity: 0.24, strokeOpacity: 0.14)
     }
 
     private func playbackButton(systemName: String, action: @escaping () -> Void) -> some View {

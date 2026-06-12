@@ -23,6 +23,20 @@ struct NowPlayingInfo: Equatable {
     }
 }
 
+struct PlayerState: Equatable {
+    var isPlaying: Bool
+    var nowPlaying: NowPlayingInfo
+}
+
+/// Steady-state values fetched together during the regular polling loop.
+struct SpeakerSnapshot: Equatable {
+    var status: SpeakerStatus
+    var source: SpeakerSource
+    var volume: Int
+    var name: String
+    var model: String
+}
+
 /// User preference for how hardware volume keys should be routed.
 ///
 /// Auto mode is intentionally source-aware. For WiFi/Bluetooth playback the app

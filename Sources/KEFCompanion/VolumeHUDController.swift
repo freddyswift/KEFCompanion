@@ -15,7 +15,7 @@ final class VolumeHUDController {
     private let model = VolumeHUDModel()
     private var dismissTask: Task<Void, Never>?
     private var presentationID = 0
-    private lazy var panel: NSPanel = makePanel()
+    private var panel: NSPanel?
 
     /// Shows or refreshes the transient HUD. `presentationID` prevents an older
     /// dismissal task from hiding a newer HUD presentation after rapid volume
@@ -23,9 +23,10 @@ final class VolumeHUDController {
     func show(title: String, volume: Int) {
         presentationID += 1
         let currentPresentationID = presentationID
+        let panel = loadPanelIfNeeded()
         model.title = title
         model.volume = volume
-        positionPanel()
+        positionPanel(panel)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
 
@@ -46,11 +47,13 @@ final class VolumeHUDController {
         presentationID += 1
         dismissTask?.cancel()
         dismissTask = nil
+        guard let panel else { return }
         panel.orderOut(nil)
         panel.alphaValue = 1
     }
 
     private func fadeOut(presentationID: Int) async {
+        guard let panel else { return }
         await NSAnimationContext.runAnimationGroup { context in
             context.duration = VolumeHUDLayout.fadeDuration
             panel.animator().alphaValue = 0
@@ -81,7 +84,17 @@ final class VolumeHUDController {
         return panel
     }
 
-    private func positionPanel() {
+    private func loadPanelIfNeeded() -> NSPanel {
+        if let panel {
+            return panel
+        }
+
+        let panel = makePanel()
+        self.panel = panel
+        return panel
+    }
+
+    private func positionPanel(_ panel: NSPanel) {
         let frame = panel.frame
         guard let screen = fallbackScreen else { return }
         let visibleFrame = screen.visibleFrame

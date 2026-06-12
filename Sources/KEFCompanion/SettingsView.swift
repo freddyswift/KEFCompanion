@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var isManualHostEditorVisible = false
     @State private var volumeStepField = ""
     @State private var lastDiscoveryStartedAt: Date?
+    @State private var displayedDiscoveredSpeakers: [DiscoveredSpeaker] = []
     @AppStorage("settingsAdvancedOptionsExpanded") private var isAdvancedOptionsExpanded = false
     @FocusState private var focusedField: FocusedField?
 
@@ -60,6 +61,7 @@ struct SettingsView: View {
                 lastDiscoveryStartedAt = Date()
             }
             appState.refreshMediaKeyAccessStatus()
+            updateDisplayedDiscoveredSpeakers()
             refreshDiscoveryIfNeeded()
             initialFocusResetToken += 1
         }
@@ -67,6 +69,18 @@ struct SettingsView: View {
             if oldValue == .volumeStep && newValue != .volumeStep {
                 commitVolumeStepField()
             }
+        }
+        .onChange(of: appState.discovery.speakers) { _, _ in
+            updateDisplayedDiscoveredSpeakers()
+        }
+        .onChange(of: appState.isConnected) { _, _ in
+            updateDisplayedDiscoveredSpeakers()
+        }
+        .onChange(of: appState.currentHost) { _, _ in
+            updateDisplayedDiscoveredSpeakers()
+        }
+        .onChange(of: appState.speakerName) { _, _ in
+            updateDisplayedDiscoveredSpeakers()
         }
     }
 
@@ -729,27 +743,32 @@ struct SettingsView: View {
             return "Last scanned just now"
         }
 
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return "Last scanned \(formatter.localizedString(for: lastDiscoveryStartedAt, relativeTo: now))"
+        return "Last scanned \(Self.relativeDateFormatter.localizedString(for: lastDiscoveryStartedAt, relativeTo: now))"
     }
 
-    private var displayedDiscoveredSpeakers: [DiscoveredSpeaker] {
+    private func updateDisplayedDiscoveredSpeakers() {
         var speakers = appState.discovery.speakers
 
-        guard appState.isConnected,
-              let host = appState.currentHost,
-              !speakers.contains(where: { $0.host == host }) else {
-            return speakers
+        if appState.isConnected,
+           let host = appState.currentHost,
+           !speakers.contains(where: { $0.host == host }) {
+            let name = appState.speakerName.isEmpty ? "Connected speaker" : appState.speakerName
+            speakers.insert(
+                DiscoveredSpeaker(id: "current-\(host)", name: name, host: host, macAddress: nil),
+                at: 0
+            )
         }
 
-        let name = appState.speakerName.isEmpty ? "Connected speaker" : appState.speakerName
-        speakers.insert(
-            DiscoveredSpeaker(id: "current-\(host)", name: name, host: host, macAddress: nil),
-            at: 0
-        )
-        return speakers
+        if displayedDiscoveredSpeakers != speakers {
+            displayedDiscoveredSpeakers = speakers
+        }
     }
+
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
 
     private func refreshDiscoveryIfNeeded() {
         // Opening Settings is a strong signal that the user is trying to choose

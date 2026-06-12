@@ -67,6 +67,24 @@ struct PanelMaterialCardBackground<BackgroundShape: InsettableShape>: ViewModifi
     }
 }
 
+struct PanelSolidCardBackground<BackgroundShape: InsettableShape>: ViewModifier {
+    let shape: BackgroundShape
+    let fillOpacity: Double
+    let strokeOpacity: Double
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                shape
+                    .fill(PanelColors.background.opacity(fillOpacity))
+            )
+            .overlay {
+                shape
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(strokeOpacity), lineWidth: 1)
+            }
+    }
+}
+
 struct PanelFloatingGlassBackground<BackgroundShape: InsettableShape>: ViewModifier {
     let shape: BackgroundShape
     let fillOpacity: Double
@@ -118,6 +136,17 @@ extension View {
         strokeOpacity: Double = 0.22
     ) -> some View {
         modifier(PanelMaterialCardBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity))
+    }
+
+    /// Cheaper card styling for hot-path surfaces such as the menu-bar popup.
+    /// It avoids per-card material blur during the first open while preserving
+    /// the same layout and contrast model.
+    func panelSolidCardBackground<BackgroundShape: InsettableShape>(
+        _ shape: BackgroundShape,
+        fillOpacity: Double = 0.34,
+        strokeOpacity: Double = 0.22
+    ) -> some View {
+        modifier(PanelSolidCardBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity))
     }
 
     /// Native glass for small floating controls and badges. Avoid using this
@@ -175,6 +204,8 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
 
     final class SizingView: NSView {
         private var isResizeScheduled = false
+        private var lastScheduledSize: NSSize = .zero
+        private var lastAppliedContentSize: NSSize = .zero
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -193,6 +224,14 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
 
         func scheduleWindowResize() {
             guard !isResizeScheduled else { return }
+            let measuredSize = bounds.size
+            guard measuredSize.width > 0, measuredSize.height > 0 else { return }
+            guard abs(lastScheduledSize.width - measuredSize.width) > 0.5 ||
+                  abs(lastScheduledSize.height - measuredSize.height) > 0.5 else {
+                return
+            }
+
+            lastScheduledSize = measuredSize
             isResizeScheduled = true
 
             DispatchQueue.main.async { [weak self] in
@@ -204,28 +243,18 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
 
         private func resizeWindowIfNeeded() {
             guard let window, bounds.width > 0, bounds.height > 0 else { return }
-            guard let contentView = window.contentView else { return }
             configureWindowAppearance(window)
 
-            // Use both the content view's fitting size and the representable's
-            // measured bounds. SwiftUI sometimes reports the correct height in
-            // only one of these paths during state transitions.
-            contentView.layoutSubtreeIfNeeded()
-            let currentContentSize = contentView.bounds.size
-            let fittingSize = contentView.fittingSize
             let measuredSize = bounds.size
-
-            let targetHeight = fittingSize.height > currentContentSize.height + 0.5
-                ? fittingSize.height
-                : measuredSize.height
-            let targetContentSize = NSSize(width: ceil(measuredSize.width), height: ceil(targetHeight))
+            let targetContentSize = NSSize(width: ceil(measuredSize.width), height: ceil(measuredSize.height))
             guard targetContentSize.width.isFinite, targetContentSize.height.isFinite else { return }
 
-            guard abs(currentContentSize.width - targetContentSize.width) > 0.5 ||
-                  abs(currentContentSize.height - targetContentSize.height) > 0.5 else {
+            guard abs(lastAppliedContentSize.width - targetContentSize.width) > 0.5 ||
+                  abs(lastAppliedContentSize.height - targetContentSize.height) > 0.5 else {
                 return
             }
 
+            lastAppliedContentSize = targetContentSize
             let targetFrameSize = window.frameRect(
                 forContentRect: NSRect(origin: .zero, size: targetContentSize)
             ).size

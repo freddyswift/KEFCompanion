@@ -142,6 +142,7 @@ final class AppState: ObservableObject {
     }
 
     func setVolumeHUDSuppressed(_ suppressed: Bool) {
+        guard isVolumeHUDSuppressed != suppressed else { return }
         isVolumeHUDSuppressed = suppressed
         if suppressed {
             volumeHUD.hide()
@@ -221,6 +222,7 @@ final class AppState: ObservableObject {
     }
 
     func completeOnboarding() {
+        guard !hasCompletedOnboarding else { return }
         hasCompletedOnboarding = true
     }
 
@@ -440,20 +442,24 @@ final class AppState: ObservableObject {
             refresh: { [weak self] in
                 await self?.refresh()
             },
+            isPlaybackStatePollingNeeded: { [weak self] in
+                self?.isPlaybackStatePollingNeeded == true
+            },
             refreshPlaybackStateForVolumeRouting: { [weak self] in
                 await self?.refreshPlaybackStateForVolumeRouting()
             }
         )
     }
 
+    private var isPlaybackStatePollingNeeded: Bool {
+        volumeKeyRoutingMode == .auto && source.usesPlaybackStateForVolumeRouting && status == .powerOn
+    }
+
     /// Auto routing needs fresher playback state than the full 3-second refresh.
     /// This lightweight poll only runs when the current source uses playback
     /// state to decide whether volume keys should control the speaker or macOS.
     private func refreshPlaybackStateForVolumeRouting() async {
-        guard volumeKeyRoutingMode == .auto,
-              source.usesPlaybackStateForVolumeRouting,
-              status == .powerOn,
-              let speaker else {
+        guard isPlaybackStatePollingNeeded, let speaker else {
             return
         }
 
@@ -473,36 +479,25 @@ final class AppState: ObservableObject {
         guard let speaker else { return }
 
         do {
-            async let s = speaker.getStatus()
-            async let src = speaker.getSource()
-            async let vol = speaker.getVolume()
-            async let name = speaker.getSpeakerName()
-            async let model = speaker.getModel()
-
-            let refreshedVolume = try await vol
-            let refreshedStatus = try await s
-            let refreshedSource = try await src
-            let refreshedName = try await name
-            let refreshedModel = try await model
+            let snapshot = try await speaker.getSnapshot()
 
             guard self.speaker === speaker else { return }
 
-            updateIfChanged(\.status, refreshedStatus)
-            updateIfChanged(\.source, refreshedSource)
-            updateIfChanged(\.volume, refreshedVolume)
-            syncDisplayedVolume(with: refreshedVolume)
-            updateIfChanged(\.speakerName, refreshedName)
-            updateIfChanged(\.speakerModel, refreshedModel)
+            updateIfChanged(\.status, snapshot.status)
+            updateIfChanged(\.source, snapshot.source)
+            updateIfChanged(\.volume, snapshot.volume)
+            syncDisplayedVolume(with: snapshot.volume)
+            updateIfChanged(\.speakerName, snapshot.name)
+            updateIfChanged(\.speakerModel, snapshot.model)
 
-            if refreshedStatus == .powerOn {
-                let refreshedIsPlaying = (try? await speaker.getIsPlaying()) ?? false
+            if snapshot.status == .powerOn, snapshot.source.usesPlaybackStateForVolumeRouting {
+                let playerData = try? await speaker.getPlayerState()
                 guard self.speaker === speaker else { return }
-                updateIfChanged(\.isPlaying, refreshedIsPlaying)
-                if refreshedIsPlaying {
-                    let refreshedNowPlaying = try? await speaker.getNowPlayingInfo()
-                    guard self.speaker === speaker else { return }
-                    updateIfChanged(\.nowPlaying, refreshedNowPlaying)
+                if let playerData {
+                    updateIfChanged(\.isPlaying, playerData.isPlaying)
+                    updateIfChanged(\.nowPlaying, playerData.isPlaying ? playerData.nowPlaying : nil)
                 } else {
+                    updateIfChanged(\.isPlaying, false)
                     updateIfChanged(\.nowPlaying, nil)
                 }
             } else {
