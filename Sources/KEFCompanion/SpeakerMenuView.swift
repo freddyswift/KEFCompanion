@@ -155,16 +155,16 @@ struct SpeakerMenuView: View {
                     Button("Wake Speaker") {
                         appState.wakeSpeaker()
                     }
-                    .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .panelFloatingButtonStyle()
                     .disabled(appState.isBusy)
                 }
 
                 Button(appState.connectionError == nil ? "Retry" : "Try Again") {
                     appState.startConnection()
                 }
-                .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .panelFloatingButtonStyle(prominent: true)
                 .disabled(appState.isBusy)
             }
 
@@ -374,14 +374,7 @@ struct SpeakerMenuView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(
-            Capsule(style: .continuous)
-                .fill(PanelColors.background.opacity(0.92))
-        )
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 1)
-        }
+        .panelFloatingGlassBackground(Capsule(style: .continuous), fillOpacity: 0.12, strokeOpacity: 0.16)
     }
 
     private var statusBadgeText: String {
@@ -486,14 +479,7 @@ struct SpeakerMenuView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            groupedShape
-                .fill(PanelColors.background.opacity(0.92))
-        )
-        .overlay {
-            groupedShape
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-        }
+        .panelMaterialCardBackground(groupedShape, fillOpacity: 0.24, strokeOpacity: 0.14)
     }
 
     private func playbackButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -501,7 +487,7 @@ struct SpeakerMenuView: View {
             Image(systemName: systemName)
                 .frame(width: 24, height: 24)
         }
-        .buttonStyle(.bordered)
         .controlSize(.small)
+        .panelFloatingButtonStyle()
     }
 }

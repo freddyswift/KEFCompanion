@@ -131,6 +131,7 @@ private struct VolumeHUDView: View {
                 Image(systemName: "speaker.fill")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.70))
+                    .frame(width: 16, height: 16)
 
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
@@ -155,9 +156,10 @@ private struct VolumeHUDView: View {
                 Image(systemName: trailingVolumeIcon)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.82))
-                    .frame(width: 16)
+                    .frame(width: 16, height: 16)
             }
             .padding(.top, 1)
+            .frame(height: 17)
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)

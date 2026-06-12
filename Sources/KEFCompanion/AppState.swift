@@ -61,12 +61,18 @@ final class AppState: ObservableObject {
     private var consecutiveRefreshFailures = 0
     private var pendingCommittedVolume: Int?
     private var pendingVolumeResetTask: Task<Void, Never>?
+    private var volumeBeforeMediaKeyMute: Int?
     private var mediaKeyRestartWasRequestedThisSession = false
     private let volumeHUD = VolumeHUDController()
     private var isVolumeHUDSuppressed = false
-    private lazy var mediaKeyController = MediaKeyController { [weak self] delta in
-        self?.handleVolumeKey(delta) ?? false
-    }
+    private lazy var mediaKeyController = MediaKeyController(
+        onVolumeDelta: { [weak self] delta in
+            self?.handleVolumeKey(delta) ?? false
+        },
+        onMuteToggle: { [weak self] in
+            self?.handleMuteKey() ?? false
+        }
+    )
 
     @Published private(set) var mediaKeyAccessState: MediaKeyAccessState = .unknown
     @Published private(set) var mediaKeyAccessMessage = ""
@@ -104,6 +110,10 @@ final class AppState: ObservableObject {
         Double(effectiveVolumeStep)
     }
 
+    var usesDefaultControlPreferences: Bool {
+        useFixedVolumeSteps && volumeStepSize == 5 && volumeKeyRoutingMode == .auto
+    }
+
     func setUseFixedVolumeSteps(_ enabled: Bool) {
         guard storedUseFixedVolumeSteps != enabled else { return }
         objectWillChange.send()
@@ -115,6 +125,12 @@ final class AppState: ObservableObject {
         guard storedVolumeStepSize != clampedStep else { return }
         objectWillChange.send()
         storedVolumeStepSize = clampedStep
+    }
+
+    func resetControlPreferences() {
+        setUseFixedVolumeSteps(true)
+        setVolumeStepSize(5)
+        volumeKeyRoutingMode = .auto
     }
 
     private static func clampedVolumeStep(_ step: Int) -> Int {
@@ -349,11 +365,29 @@ final class AppState: ObservableObject {
         source = .wifi
         volume = 0
         displayedVolume = 0
+        volumeBeforeMediaKeyMute = nil
         isPlaying = false
         nowPlaying = nil
         isBusy = false
         clearPendingVolume(keepDisplayedVolume: false)
         volumeHUD.hide()
+    }
+
+    func forgetSpeaker(host: String) {
+        let forgottenHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !forgottenHost.isEmpty else { return }
+
+        objectWillChange.send()
+        if manualIP.trimmingCharacters(in: .whitespacesAndNewlines) == forgottenHost {
+            manualIP = ""
+        }
+        if lastConnectedHost == forgottenHost {
+            lastConnectedHost = ""
+        }
+
+        if currentHost == forgottenHost {
+            disconnect()
+        }
     }
 
     @discardableResult
@@ -569,7 +603,16 @@ final class AppState: ObservableObject {
     }
 
     func commitVolume(_ newVolume: Int) {
-        let clampedVolume = volumePolicy.normalizedVolume(newVolume)
+        commitVolume(newVolume, applyingStepPolicy: true)
+    }
+
+    private func commitVolume(_ newVolume: Int, applyingStepPolicy: Bool) {
+        let clampedVolume = applyingStepPolicy
+            ? volumePolicy.normalizedVolume(newVolume)
+            : VolumePolicy.clampedVolume(newVolume)
+        if clampedVolume > 0 {
+            volumeBeforeMediaKeyMute = nil
+        }
         volume = clampedVolume
         displayedVolume = clampedVolume
         pendingCommittedVolume = clampedVolume
@@ -606,6 +649,18 @@ final class AppState: ObservableObject {
         let direction = delta.signum()
         guard direction != 0 else { return }
         commitVolume(volumePolicy.nextVolume(from: displayedVolume, direction: direction))
+    }
+
+    private func toggleMute() {
+        let result = VolumePolicy.muteToggle(
+            from: displayedVolume,
+            restoreVolume: volumeBeforeMediaKeyMute
+        )
+        volumeBeforeMediaKeyMute = result.restoreVolume
+
+        if result.targetVolume != displayedVolume {
+            commitVolume(result.targetVolume, applyingStepPolicy: false)
+        }
     }
 
     private var volumeHUDTitle: String {
@@ -678,6 +733,9 @@ final class AppState: ObservableObject {
             }
         } else {
             displayedVolume = remoteVolume
+            if remoteVolume > 0 {
+                volumeBeforeMediaKeyMute = nil
+            }
         }
     }
 
@@ -695,6 +753,12 @@ final class AppState: ObservableObject {
     private func handleVolumeKey(_ delta: Int) -> Bool {
         guard shouldRouteVolumeKeysToSpeaker else { return false }
         adjustVolume(by: delta)
+        return true
+    }
+
+    private func handleMuteKey() -> Bool {
+        guard shouldRouteVolumeKeysToSpeaker else { return false }
+        toggleMute()
         return true
     }
 

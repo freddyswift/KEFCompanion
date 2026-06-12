@@ -32,18 +32,26 @@ final class MediaKeyController {
         static let eventSubtype = 8
         static let volumeUp = 0
         static let volumeDown = 1
+        static let mute = 7
         static let keyDownState = 0xA
         static let repeatMask = 0x1
     }
 
+    private enum MediaKeyAction {
+        case volumeDelta(Int)
+        case muteToggle
+    }
+
     private let onVolumeDelta: (Int) -> Bool
+    private let onMuteToggle: () -> Bool
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
     /// `onVolumeDelta` returns whether the app consumed the event. Returning
     /// false lets macOS handle the original volume key event normally.
-    init(onVolumeDelta: @escaping (Int) -> Bool) {
+    init(onVolumeDelta: @escaping (Int) -> Bool, onMuteToggle: @escaping () -> Bool) {
         self.onVolumeDelta = onVolumeDelta
+        self.onMuteToggle = onMuteToggle
     }
 
     func activate() -> ActivationResult {
@@ -116,18 +124,25 @@ final class MediaKeyController {
             return Unmanaged.passUnretained(event)
         }
 
-        guard let delta = mediaKeyDelta(for: event) else {
+        guard let action = mediaKeyAction(for: event) else {
             return Unmanaged.passUnretained(event)
         }
 
-        if onVolumeDelta(delta) {
+        let wasConsumed = switch action {
+        case .volumeDelta(let delta):
+            onVolumeDelta(delta)
+        case .muteToggle:
+            onMuteToggle()
+        }
+
+        if wasConsumed {
             return nil
         }
 
         return Unmanaged.passUnretained(event)
     }
 
-    private func mediaKeyDelta(for event: CGEvent) -> Int? {
+    private func mediaKeyAction(for event: CGEvent) -> MediaKeyAction? {
         guard let nsEvent = NSEvent(cgEvent: event) else { return nil }
         guard nsEvent.subtype.rawValue == MediaKey.eventSubtype else { return nil }
 
@@ -139,13 +154,16 @@ final class MediaKeyController {
         let isKeyDown = ((keyFlags & 0xFF00) >> 8) == MediaKey.keyDownState
         let isRepeat = (keyFlags & MediaKey.repeatMask) != 0
 
-        guard isKeyDown || isRepeat else { return nil }
-
         switch keyCode {
         case MediaKey.volumeUp:
-            return 1
+            guard isKeyDown || isRepeat else { return nil }
+            return .volumeDelta(1)
         case MediaKey.volumeDown:
-            return -1
+            guard isKeyDown || isRepeat else { return nil }
+            return .volumeDelta(-1)
+        case MediaKey.mute:
+            guard isKeyDown, !isRepeat else { return nil }
+            return .muteToggle
         default:
             return nil
         }

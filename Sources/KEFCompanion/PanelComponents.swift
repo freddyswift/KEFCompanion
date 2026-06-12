@@ -34,12 +34,11 @@ struct SettingsSection<Content: View>: View {
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .background(PanelColors.sectionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(PanelColors.sectionStroke, lineWidth: 1)
-        }
+        .panelMaterialCardBackground(
+            RoundedRectangle(cornerRadius: 8, style: .continuous),
+            fillOpacity: 0.34,
+            strokeOpacity: 0.22
+        )
         .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
     }
 }

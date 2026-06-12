@@ -29,4 +29,32 @@ final class VolumePolicyTests: XCTestCase {
         XCTAssertEqual(policy.nextVolume(from: 0, direction: -1), 0)
         XCTAssertEqual(policy.nextVolume(from: 100, direction: 1), 100)
     }
+
+    func testMuteToggleStoresCurrentVolumeAndMutes() {
+        let result = VolumePolicy.muteToggle(from: 37, restoreVolume: nil)
+
+        XCTAssertEqual(result.targetVolume, 0)
+        XCTAssertEqual(result.restoreVolume, 37)
+    }
+
+    func testMuteToggleRestoresExactPreviousVolume() {
+        let result = VolumePolicy.muteToggle(from: 0, restoreVolume: 37)
+
+        XCTAssertEqual(result.targetVolume, 37)
+        XCTAssertNil(result.restoreVolume)
+    }
+
+    func testMuteToggleWithoutRestoreStaysMuted() {
+        let result = VolumePolicy.muteToggle(from: 0, restoreVolume: nil)
+
+        XCTAssertEqual(result.targetVolume, 0)
+        XCTAssertNil(result.restoreVolume)
+    }
+
+    func testMuteToggleClampsRestoreVolume() {
+        let result = VolumePolicy.muteToggle(from: 0, restoreVolume: 150)
+
+        XCTAssertEqual(result.targetVolume, 100)
+        XCTAssertNil(result.restoreVolume)
+    }
 }

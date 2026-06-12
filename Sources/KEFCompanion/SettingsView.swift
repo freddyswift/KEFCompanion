@@ -12,9 +12,25 @@ struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var updateController: UpdateController
 
+    private enum Layout {
+        static let labelWidth: CGFloat = 82
+        static let segmentedWidth: CGFloat = 178
+        static let stepInputWidth: CGFloat = 48
+    }
+
     @State private var ipField: String = ""
     @State private var testResult: TestResult?
     @State private var initialFocusResetToken = 0
+    @State private var isManualHostEditorVisible = false
+    @State private var volumeStepField = ""
+    @State private var lastDiscoveryStartedAt: Date?
+    @AppStorage("settingsAdvancedOptionsExpanded") private var isAdvancedOptionsExpanded = false
+    @FocusState private var focusedField: FocusedField?
+
+    private enum FocusedField: Hashable {
+        case manualHost
+        case volumeStep
+    }
 
     enum TestResult {
         case testing
@@ -25,22 +41,32 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             settingsHeader
-            connectionSection
-            discoveredSpeakersSection
+            speakersSection
             volumeSettingsSection
             keyboardSettingsSection
             updateSection
         }
         .padding(16)
         .frame(width: MenuPanelLayout.width, alignment: .topLeading)
-        .background(PanelColors.settingsBackground)
+        .panelWindowBackground()
         .menuPanelSurface()
-        .background(InitialFocusSink(trigger: initialFocusResetToken))
+        .background(SettingsFocusSink(trigger: initialFocusResetToken))
         .onAppear {
             ipField = appState.manualIP
+            volumeStepField = "\(appState.volumeStepSize)"
+            let hasManualHost = !appState.manualIP.isEmpty
+            isManualHostEditorVisible = hasManualHost
+            if appState.discovery.isSearching && lastDiscoveryStartedAt == nil {
+                lastDiscoveryStartedAt = Date()
+            }
             appState.refreshMediaKeyAccessStatus()
             refreshDiscoveryIfNeeded()
             initialFocusResetToken += 1
+        }
+        .onChange(of: focusedField) { oldValue, newValue in
+            if oldValue == .volumeStep && newValue != .volumeStep {
+                commitVolumeStepField()
+            }
         }
     }
 
@@ -81,75 +107,70 @@ struct SettingsView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(
-            Capsule(style: .continuous)
-                .fill(PanelColors.controlFill)
-        )
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(PanelColors.sectionStroke, lineWidth: 1)
-        }
-    }
-
-    private var connectionSection: some View {
-        SettingsSection(title: "Connection", systemImage: "dot.radiowaves.left.and.right") {
-            autoDiscoveryToggle
-            settingsDivider
-            manualIPEditor
-            testResultView
-        }
+        .panelFloatingGlassBackground(Capsule(style: .continuous), fillOpacity: 0.12, strokeOpacity: 0.16)
     }
 
     private var autoDiscoveryToggle: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Auto-discovery")
-                    .font(.subheadline)
-                Text("Find speakers on the local network.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            Button {
-                appState.discovery.startDiscovery()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .frame(width: 18, height: 18)
-            }
-            .controlSize(.small)
-            .help("Rescan")
-            .disabled(appState.discovery.isSearching || !appState.useAutoDiscovery)
-
-            Toggle("Auto-discovery", isOn: $appState.useAutoDiscovery)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .onChange(of: appState.useAutoDiscovery) { _, _ in
-                    testResult = nil
-                    appState.startConnection()
+        settingsControlRow("Discovery") {
+            HStack(spacing: 8) {
+                Button {
+                    startDiscoveryFromSettings()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 18, height: 18)
                 }
+                .controlSize(.small)
+                .panelFloatingButtonStyle()
+                .help("Rescan")
+                .disabled(appState.discovery.isSearching || !appState.useAutoDiscovery)
+
+                Toggle("Find speakers automatically", isOn: $appState.useAutoDiscovery)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: appState.useAutoDiscovery) { _, _ in
+                        testResult = nil
+                        if appState.useAutoDiscovery {
+                            lastDiscoveryStartedAt = Date()
+                        }
+                        appState.startConnection()
+                    }
+            }
         }
     }
 
+    @ViewBuilder
     private var manualIPEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                Label("Manual Host", systemImage: "network")
-                    .font(.subheadline.weight(.medium))
+        if isManualHostEditorVisible {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Connect manually")
+                        .font(.subheadline.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 8)
+                    Spacer(minLength: 8)
 
-                Button(action: manualIPAction) {
-                    Label(manualIPActionTitle, systemImage: manualIPActionIcon)
+                    Button(action: manualIPAction) {
+                        Label(manualIPActionTitle, systemImage: manualIPActionIcon)
+                    }
+                    .controlSize(.small)
+                    .disabled(ipField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .controlSize(.small)
-                .disabled(ipField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
 
-            TextField("192.168.1.40 or speaker.local", text: $ipField)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { applyIP() }
+                TextField("192.168.1.40 or speaker.local", text: $ipField)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .manualHost)
+                    .onSubmit { applyIP() }
+            }
+        } else {
+            Button {
+                isManualHostEditorVisible = true
+                DispatchQueue.main.async {
+                    focusedField = .manualHost
+                }
+            } label: {
+                Label("Add Manual Host", systemImage: "plus")
+            }
+            .controlSize(.small)
         }
     }
 
@@ -175,45 +196,41 @@ struct SettingsView: View {
             appState.manualIP = ""
             ipField = ""
             testResult = nil
+            focusedField = nil
+            isManualHostEditorVisible = false
         } else {
             applyIP()
         }
     }
 
     @ViewBuilder
-    private var testResultView: some View {
+    private var manualHostStatusRow: some View {
         if let result = testResult {
             switch result {
             case .testing:
-                StatusRow(title: "Testing connection", detail: nil, systemImage: "hourglass", tint: .secondary) {
+                StatusRow(title: "Testing manual host", detail: manualHostStatusDetail, systemImage: "hourglass", tint: .secondary) {
                     ProgressView()
                         .controlSize(.small)
                 }
             case .success(let name):
-                StatusRow(title: "Connected to \(name)", detail: nil, systemImage: "checkmark.circle.fill", tint: .green)
+                StatusRow(title: "Manual host connected", detail: name, systemImage: "checkmark.circle.fill", tint: .green)
             case .failure(let message):
-                StatusRow(title: message, detail: nil, systemImage: "xmark.circle.fill", tint: .red)
+                StatusRow(title: "Manual host failed", detail: message, systemImage: "xmark.circle.fill", tint: .red)
             }
+        } else if manualHostInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            StatusRow(title: "Manual host not set", detail: "Use this if discovery misses your speaker.", systemImage: "minus.circle", tint: .secondary)
+        } else if manualHostInput != savedManualHost {
+            StatusRow(title: "Manual host not saved", detail: "Press Connect to test and save it.", systemImage: "pencil.circle", tint: .orange)
+        } else if isSavedManualHostConnected {
+            StatusRow(title: "Manual host connected", detail: savedManualHost, systemImage: "checkmark.circle.fill", tint: .green)
+        } else {
+            StatusRow(title: "Manual host saved", detail: "Will connect to \(savedManualHost) on launch.", systemImage: "link.circle", tint: .secondary)
         }
     }
 
-    private var discoveredSpeakersSection: some View {
-        SettingsSection(title: "Discovered Speakers", systemImage: "hifispeaker") {
-            HStack(alignment: .center, spacing: 8) {
-                Text(discoverySummaryText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 8)
-
-                Button {
-                    appState.discovery.startDiscovery()
-                } label: {
-                    Label("Rescan", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.small)
-                .disabled(appState.discovery.isSearching)
-            }
+    private var speakersSection: some View {
+        SettingsSection(title: "Speakers", systemImage: "hifispeaker") {
+            speakerDiscoveryHeader
 
             if appState.discovery.isSearching {
                 StatusRow(title: "Scanning your network", detail: nil, systemImage: "dot.radiowaves.left.and.right", tint: .secondary) {
@@ -234,16 +251,97 @@ struct SettingsView: View {
             ForEach(displayedDiscoveredSpeakers) { speaker in
                 discoveredSpeakerRow(speaker)
             }
+
+            connectionOptionsDisclosure
         }
     }
 
+    private var speakerDiscoveryHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            TimelineView(.periodic(from: .now, by: 30)) { timeline in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(discoverySummaryText)
+                        .font(.subheadline.weight(.medium))
+
+                    Text(discoveryRecencyText(now: timeline.date))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 10)
+
+            Button {
+                startDiscoveryFromSettings()
+            } label: {
+                Label("Rescan", systemImage: "arrow.clockwise")
+            }
+            .controlSize(.small)
+            .panelFloatingButtonStyle()
+            .disabled(appState.discovery.isSearching)
+        }
+        .frame(minHeight: 34)
+    }
+
+    private var connectionOptionsDisclosure: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.14))
+                .frame(height: 1)
+                .padding(.top, 2)
+
+            Button {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+
+                withTransaction(transaction) {
+                    isAdvancedOptionsExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isAdvancedOptionsExpanded ? 90 : 0))
+                        .frame(width: 10)
+
+                    Text("Connection Options")
+                        .font(.caption.weight(.semibold))
+
+                    Spacer(minLength: 8)
+
+                    Text(connectionOptionsSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isAdvancedOptionsExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    autoDiscoveryToggle
+                    manualIPEditor
+                    manualHostStatusRow
+                }
+                .padding(.top, 2)
+            }
+        }
+        .transaction { transaction in
+            transaction.disablesAnimations = true
+            transaction.animation = nil
+        }
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
     private func discoveredSpeakerRow(_ speaker: DiscoveredSpeaker) -> some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(speaker.name)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .lineLimit(1)
-                Text(speaker.host)
+                Text(discoveredSpeakerDetail(speaker))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -252,9 +350,35 @@ struct SettingsView: View {
             Spacer(minLength: 8)
 
             if appState.currentHost == speaker.host && appState.isConnected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .accessibilityLabel("Current speaker")
+                Menu {
+                    Button {
+                        disconnectSpeaker(speaker)
+                    } label: {
+                        Label("Disconnect", systemImage: "power")
+                    }
+
+                    Button(role: .destructive) {
+                        forgetSpeaker(speaker)
+                    } label: {
+                        Label("Forget Speaker", systemImage: "trash")
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Label("Current", systemImage: "checkmark.circle.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.green)
+
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Current speaker actions")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .controlSize(.small)
+                .help("Current speaker actions")
             } else {
                 Button {
                     ipField = speaker.host
@@ -265,86 +389,200 @@ struct SettingsView: View {
                 .controlSize(.small)
             }
         }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(PanelColors.rowFill)
-        )
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+    }
+
+    private func discoveredSpeakerDetail(_ speaker: DiscoveredSpeaker) -> String {
+        if appState.currentHost == speaker.host && appState.isConnected {
+            return "\(speaker.host) · current speaker"
+        }
+
+        return speaker.host
     }
 
     private var volumeSettingsSection: some View {
-        SettingsSection(title: "Volume Control", systemImage: "speaker.wave.2") {
-            Picker("Volume control", selection: fixedVolumeStepsBinding) {
-                Text("Any Value").tag(false)
-                Text("Fixed Steps").tag(true)
+        SettingsSection(title: "Volume Steps", systemImage: "speaker.wave.2") {
+            settingsControlRow("Mode") {
+                Picker("Volume control", selection: fixedVolumeStepsBinding) {
+                    Text("Any Value").tag(false)
+                    Text("Fixed Steps").tag(true)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: Layout.segmentedWidth)
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(maxWidth: .infinity)
 
             if appState.useFixedVolumeSteps {
-                settingsDivider
                 volumeStepSizeRow
             }
         }
     }
 
-    private var volumeStepSizeRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Label("Step size", systemImage: "number")
-                .font(.subheadline.weight(.medium))
+    private func disconnectSpeaker(_ speaker: DiscoveredSpeaker) {
+        guard appState.currentHost == speaker.host else { return }
+        appState.disconnect()
+        testResult = nil
+    }
 
-            Spacer(minLength: 8)
-
-            Stepper(value: volumeStepSizeBinding, in: appState.allowedVolumeStepRange) {
-                Text("\(appState.volumeStepSize)")
-                    .font(.system(.body, design: .rounded).weight(.semibold))
-                    .monospacedDigit()
-                    .frame(minWidth: 24, alignment: .trailing)
-            }
+    private func forgetSpeaker(_ speaker: DiscoveredSpeaker) {
+        appState.forgetSpeaker(host: speaker.host)
+        if manualHostInput == speaker.host || savedManualHost.isEmpty {
+            ipField = appState.manualIP
+            testResult = nil
+            focusedField = nil
+            isManualHostEditorVisible = !appState.manualIP.isEmpty
         }
     }
 
+    private var volumeStepSizeRow: some View {
+        settingsControlRow("Step size") {
+            volumeStepSizeControl
+        }
+    }
+
+    private var volumeStepSizeControl: some View {
+        HStack(spacing: 6) {
+            TextField("5", text: $volumeStepField)
+                .font(.system(.body, design: .rounded).weight(.semibold))
+                .monospacedDigit()
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: Layout.stepInputWidth)
+                .focused($focusedField, equals: .volumeStep)
+                .onSubmit { commitVolumeStepField() }
+                .onChange(of: volumeStepField) { _, newValue in
+                    updateVolumeStepField(newValue)
+                }
+                .onChange(of: appState.volumeStepSize) { _, newValue in
+                    volumeStepField = "\(newValue)"
+                }
+
+            Stepper("Step size", value: volumeStepSizeBinding, in: appState.allowedVolumeStepRange)
+                .labelsHidden()
+                .help("Change step size")
+        }
+    }
+
+    private func updateVolumeStepField(_ newValue: String) {
+        let digitsOnly = newValue.filter { $0.isNumber }
+
+        guard digitsOnly == newValue else {
+            volumeStepField = digitsOnly
+            return
+        }
+
+        guard let step = Int(digitsOnly) else { return }
+        appState.setVolumeStepSize(step)
+    }
+
+    private func commitVolumeStepField() {
+        guard let step = Int(volumeStepField) else {
+            volumeStepField = "\(appState.volumeStepSize)"
+            return
+        }
+
+        appState.setVolumeStepSize(step)
+        volumeStepField = "\(appState.volumeStepSize)"
+        focusedField = nil
+    }
+
+    private func settingsControlRow<Control: View>(
+        _ title: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: Layout.labelWidth, alignment: .leading)
+
+            control()
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(minHeight: 34)
+    }
+
     private var keyboardSettingsSection: some View {
-        SettingsSection(title: "Keyboard Volume Keys", systemImage: "keyboard") {
-            Picker("Keyboard volume target", selection: $appState.volumeKeyRoutingMode) {
-                Text("Mac").tag(VolumeKeyRoutingMode.mac)
-                Text("Auto").tag(VolumeKeyRoutingMode.auto)
-                Text("KEF").tag(VolumeKeyRoutingMode.speaker)
+        SettingsSection(title: "Keyboard Volume", systemImage: "keyboard") {
+            settingsControlRow("Target") {
+                Picker("Keyboard volume target", selection: $appState.volumeKeyRoutingMode) {
+                    Text("Mac").tag(VolumeKeyRoutingMode.mac)
+                    Text("Auto").tag(VolumeKeyRoutingMode.auto)
+                    Text("KEF").tag(VolumeKeyRoutingMode.speaker)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: Layout.segmentedWidth)
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(maxWidth: .infinity)
 
             if appState.volumeKeyRoutingMode.requiresMediaKeyAccess {
-                settingsDivider
                 mediaKeyStatusRow
             }
 
             if shouldShowMediaKeyHelp {
                 mediaKeyHelp
             }
+
+            if !appState.usesDefaultControlPreferences {
+                resetControlPreferencesRow
+            }
+        }
+    }
+
+    private var resetControlPreferencesRow: some View {
+        settingsControlRow("Defaults") {
+            Button {
+                resetControlPreferences()
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .disabled(appState.usesDefaultControlPreferences)
+            .help("Reset volume step and keyboard volume settings")
         }
     }
 
     private var updateSection: some View {
-        SettingsSection(title: "Updates", systemImage: "arrow.down.circle") {
-            StatusRow(
-                title: updateStatusTitle,
-                detail: updateStatusDetail,
-                systemImage: updateStatusIcon,
-                tint: updateStatusColor
-            ) {
-                Button {
-                    updateController.checkForUpdates()
-                } label: {
-                    Label("Check Now", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.small)
-                .disabled(!updateController.canCheckForUpdates)
-                .help("Check for updates")
+        SettingsSection(title: "App Updates", systemImage: "arrow.down.circle") {
+            updateStatusRow
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(updateStatusTitle)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+
+                Text(updateStatusDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if updateController.configurationState == .ready {
+                updateCheckButton
             }
         }
+        .frame(minHeight: 34)
+    }
+
+    private var updateCheckButton: some View {
+        Button {
+            updateController.checkForUpdates()
+        } label: {
+            Label("Check Now", systemImage: "arrow.clockwise")
+        }
+        .controlSize(.small)
+        .panelFloatingButtonStyle()
+        .disabled(!updateController.canCheckForUpdates)
+        .help("Check for updates")
     }
 
     private var mediaKeyStatusRow: some View {
@@ -379,12 +617,6 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsDivider: some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor).opacity(0.18))
-            .frame(height: 1)
-    }
-
     private var appDisplayName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
@@ -411,25 +643,7 @@ struct SettingsView: View {
         case .ready:
             return appVersionSummary
         case .localBuild:
-            return "\(appVersionSummary). Release update feed unavailable."
-        }
-    }
-
-    private var updateStatusIcon: String {
-        switch updateController.configurationState {
-        case .ready:
-            "arrow.down.circle.fill"
-        case .localBuild:
-            "hammer"
-        }
-    }
-
-    private var updateStatusColor: Color {
-        switch updateController.configurationState {
-        case .ready:
-            .green
-        case .localBuild:
-            .secondary
+            return "Updates unavailable in source builds."
         }
     }
 
@@ -493,6 +707,33 @@ struct SettingsView: View {
         return "\(count) speakers found"
     }
 
+    private var connectionOptionsSummary: String {
+        if !savedManualHost.isEmpty {
+            return "Manual host set"
+        }
+
+        return appState.useAutoDiscovery ? "Auto-discovery on" : "Auto-discovery off"
+    }
+
+    private func discoveryRecencyText(now: Date) -> String {
+        if appState.discovery.isSearching {
+            return "Scanning now"
+        }
+
+        guard let lastDiscoveryStartedAt else {
+            return appState.discovery.speakers.isEmpty ? "Not scanned yet" : "Results from this session"
+        }
+
+        let elapsed = now.timeIntervalSince(lastDiscoveryStartedAt)
+        if elapsed < 45 {
+            return "Last scanned just now"
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last scanned \(formatter.localizedString(for: lastDiscoveryStartedAt, relativeTo: now))"
+    }
+
     private var displayedDiscoveredSpeakers: [DiscoveredSpeaker] {
         var speakers = appState.discovery.speakers
 
@@ -520,6 +761,11 @@ struct SettingsView: View {
             return
         }
 
+        startDiscoveryFromSettings()
+    }
+
+    private func startDiscoveryFromSettings() {
+        lastDiscoveryStartedAt = Date()
         appState.discovery.startDiscovery()
     }
 
@@ -533,8 +779,33 @@ struct SettingsView: View {
     private var volumeStepSizeBinding: Binding<Int> {
         Binding(
             get: { appState.volumeStepSize },
-            set: { appState.setVolumeStepSize($0) }
+            set: {
+                appState.setVolumeStepSize($0)
+                volumeStepField = "\(appState.volumeStepSize)"
+            }
         )
+    }
+
+    private func resetControlPreferences() {
+        appState.resetControlPreferences()
+        volumeStepField = "\(appState.volumeStepSize)"
+        focusedField = nil
+    }
+
+    private var manualHostInput: String {
+        ipField.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var savedManualHost: String {
+        appState.manualIP.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSavedManualHostConnected: Bool {
+        !savedManualHost.isEmpty && appState.isConnected && appState.currentHost == savedManualHost
+    }
+
+    private var manualHostStatusDetail: String? {
+        manualHostInput.isEmpty ? nil : manualHostInput
     }
 
     private var mediaKeyStatusTitle: String {
@@ -588,7 +859,7 @@ struct SettingsView: View {
         case .working:
             switch appState.volumeKeyRoutingMode {
             case .auto:
-                return "When your speaker is playing, volume keys control KEF. When paused, they control your Mac."
+                return "KEF while playing. Mac when paused."
             case .speaker:
                 return "Volume keys control your KEF speaker."
             case .mac:
@@ -762,7 +1033,7 @@ struct SettingsView: View {
     }
 }
 
-private struct InitialFocusSink: NSViewRepresentable {
+private struct SettingsFocusSink: NSViewRepresentable {
     let trigger: Int
 
     func makeNSView(context: Context) -> FocusSinkView {
@@ -776,13 +1047,21 @@ private struct InitialFocusSink: NSViewRepresentable {
     final class FocusSinkView: NSView {
         private var activatedTrigger: Int?
         private var pendingTrigger: Int?
+        private var mouseDownMonitor: Any?
 
         override var acceptsFirstResponder: Bool {
             true
         }
 
+        deinit {
+            if let mouseDownMonitor {
+                NSEvent.removeMonitor(mouseDownMonitor)
+            }
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            installMouseDownMonitorIfNeeded()
             activatePendingTrigger()
         }
 
@@ -803,6 +1082,52 @@ private struct InitialFocusSink: NSViewRepresentable {
                 window.initialFirstResponder = self
                 window.makeFirstResponder(self)
             }
+        }
+
+        private func installMouseDownMonitorIfNeeded() {
+            guard mouseDownMonitor == nil else { return }
+
+            mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                self?.dismissTextFocusIfNeeded(for: event)
+                return event
+            }
+        }
+
+        private func dismissTextFocusIfNeeded(for event: NSEvent) {
+            guard let window, event.window === window, isFirstResponderTextInput(in: window) else {
+                return
+            }
+
+            guard let contentView = window.contentView else { return }
+            let location = contentView.convert(event.locationInWindow, from: nil)
+            let hitView = contentView.hitTest(location)
+            guard !isTextInputTarget(hitView) else { return }
+
+            window.makeFirstResponder(self)
+        }
+
+        private func isFirstResponderTextInput(in window: NSWindow) -> Bool {
+            if window.firstResponder is NSTextView {
+                return true
+            }
+
+            guard let firstResponderView = window.firstResponder as? NSView else {
+                return false
+            }
+
+            return isTextInputTarget(firstResponderView)
+        }
+
+        private func isTextInputTarget(_ view: NSView?) -> Bool {
+            var candidate = view
+            while let current = candidate {
+                if current is NSTextField || current is NSTextView {
+                    return true
+                }
+                candidate = current.superview
+            }
+
+            return false
         }
     }
 }

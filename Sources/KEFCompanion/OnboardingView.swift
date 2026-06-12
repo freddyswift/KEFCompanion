@@ -417,13 +417,10 @@ private struct OnboardingCard<Content: View>: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(PanelColors.background.opacity(0.92))
+        .panelMaterialCardBackground(
+            RoundedRectangle(cornerRadius: 8, style: .continuous),
+            fillOpacity: 0.34,
+            strokeOpacity: 0.18
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-        }
     }
 }

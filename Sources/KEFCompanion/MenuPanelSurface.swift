@@ -24,10 +24,138 @@ extension View {
 enum PanelColors {
     static let background = Color(nsColor: .controlBackgroundColor)
     static let settingsBackground = Color(nsColor: .windowBackgroundColor)
-    static let sectionFill = Color(nsColor: .controlBackgroundColor).opacity(0.40)
+    static let sectionFill = Color(nsColor: .controlBackgroundColor).opacity(0.34)
     static let sectionStroke = Color(nsColor: .separatorColor).opacity(0.22)
-    static let controlFill = Color(nsColor: .controlBackgroundColor).opacity(0.70)
+    static let controlFill = Color(nsColor: .controlBackgroundColor).opacity(0.58)
     static let rowFill = Color(nsColor: .separatorColor).opacity(0.07)
+}
+
+struct PanelWindowBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.0)
+        if #available(macOS 15.0, *) {
+            content
+                .background(.regularMaterial)
+                .containerBackground(.regularMaterial, for: .window)
+        } else {
+            content
+                .background(.regularMaterial)
+        }
+        #else
+        content
+            .background(.regularMaterial)
+        #endif
+    }
+}
+
+struct PanelMaterialCardBackground<BackgroundShape: InsettableShape>: ViewModifier {
+    let shape: BackgroundShape
+    let fillOpacity: Double
+    let strokeOpacity: Double
+
+    func body(content: Content) -> some View {
+        content
+            .background(.regularMaterial, in: shape)
+            .background(
+                shape
+                    .fill(PanelColors.background.opacity(fillOpacity))
+            )
+            .overlay {
+                shape
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(strokeOpacity), lineWidth: 1)
+            }
+    }
+}
+
+struct PanelFloatingGlassBackground<BackgroundShape: InsettableShape>: ViewModifier {
+    let shape: BackgroundShape
+    let fillOpacity: Double
+    let strokeOpacity: Double
+
+    func body(content: Content) -> some View {
+        glassOrMaterial(content: content)
+            .overlay {
+                shape
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(strokeOpacity), lineWidth: 1)
+            }
+    }
+
+    @ViewBuilder
+    private func glassOrMaterial(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular, in: shape)
+        } else {
+            materialFallback(content: content)
+        }
+        #else
+        materialFallback(content: content)
+        #endif
+    }
+
+    private func materialFallback(content: Content) -> some View {
+        content
+            .background(.regularMaterial, in: shape)
+            .background(
+                shape
+                    .fill(PanelColors.background.opacity(fillOpacity))
+            )
+    }
+}
+
+extension View {
+    func panelWindowBackground() -> some View {
+        modifier(PanelWindowBackground())
+    }
+
+    /// Regular material for content cards and grouped information. This keeps
+    /// repeated content sections calm while the window and small badges carry
+    /// the system's glass/material character.
+    func panelMaterialCardBackground<BackgroundShape: InsettableShape>(
+        _ shape: BackgroundShape,
+        fillOpacity: Double = 0.34,
+        strokeOpacity: Double = 0.22
+    ) -> some View {
+        modifier(PanelMaterialCardBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity))
+    }
+
+    /// Native glass for small floating controls and badges. Avoid using this
+    /// for large content sections where repeated glass surfaces get visually noisy.
+    func panelFloatingGlassBackground<BackgroundShape: InsettableShape>(
+        _ shape: BackgroundShape,
+        fillOpacity: Double = 0.14,
+        strokeOpacity: Double = 0.16
+    ) -> some View {
+        modifier(PanelFloatingGlassBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity))
+    }
+
+    /// Uses native glass styling for compact floating action buttons on newer
+    /// macOS, while preserving standard bordered buttons on older systems.
+    @ViewBuilder
+    func panelFloatingButtonStyle(prominent: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            if prominent {
+                buttonStyle(.glassProminent)
+            } else {
+                buttonStyle(.glass)
+            }
+        } else {
+            if prominent {
+                buttonStyle(.borderedProminent)
+            } else {
+                buttonStyle(.bordered)
+            }
+        }
+        #else
+        if prominent {
+            buttonStyle(.borderedProminent)
+        } else {
+            buttonStyle(.bordered)
+        }
+        #endif
+    }
 }
 
 /// Fixed panel width used by both the main menu and Settings window so controls
@@ -77,6 +205,7 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
         private func resizeWindowIfNeeded() {
             guard let window, bounds.width > 0, bounds.height > 0 else { return }
             guard let contentView = window.contentView else { return }
+            configureWindowAppearance(window)
 
             // Use both the content view's fitting size and the representable's
             // measured bounds. SwiftUI sometimes reports the correct height in
@@ -109,6 +238,11 @@ private struct MenuPanelWindowSizer: NSViewRepresentable {
             // The menu bar anchors popovers by their top edge; preserving that
             // edge keeps expanding/collapsing panels visually stable.
             window.setFrame(frame, display: true, animate: false)
+        }
+
+        private func configureWindowAppearance(_ window: NSWindow) {
+            window.isOpaque = false
+            window.backgroundColor = .clear
         }
     }
 }

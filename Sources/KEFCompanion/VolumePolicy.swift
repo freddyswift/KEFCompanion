@@ -49,7 +49,25 @@ struct VolumePolicy: Equatable, Sendable {
         return max(0, previousStep)
     }
 
-    private static func clampedVolume(_ volume: Int) -> Int {
+    static func muteToggle(from currentVolume: Int, restoreVolume: Int?) -> (targetVolume: Int, restoreVolume: Int?) {
+        let clampedCurrentVolume = clampedVolume(currentVolume)
+        if clampedCurrentVolume > 0 {
+            return (targetVolume: 0, restoreVolume: clampedCurrentVolume)
+        }
+
+        guard let restoreVolume else {
+            return (targetVolume: clampedCurrentVolume, restoreVolume: nil)
+        }
+
+        let clampedRestoreVolume = clampedVolume(restoreVolume)
+        guard clampedRestoreVolume > 0 else {
+            return (targetVolume: clampedCurrentVolume, restoreVolume: nil)
+        }
+
+        return (targetVolume: clampedRestoreVolume, restoreVolume: nil)
+    }
+
+    static func clampedVolume(_ volume: Int) -> Int {
         max(0, min(100, volume))
     }
 }
