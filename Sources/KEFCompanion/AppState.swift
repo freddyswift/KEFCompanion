@@ -62,6 +62,9 @@ final class AppState: ObservableObject {
     private var pendingCommittedVolume: Int?
     private var pendingVolumeResetTask: Task<Void, Never>?
     private var volumeBeforeMediaKeyMute: Int?
+    private let speakerClientFactory: any KEFSpeakerClientFactory
+    private let timing: SpeakerTimingPolicy
+    private let volumeCommandCoordinator = VolumeCommandCoordinator()
     private var mediaKeyRestartWasRequestedThisSession = false
     private let volumeHUD = VolumeHUDController()
     private var isVolumeHUDSuppressed = false
@@ -84,10 +87,19 @@ final class AppState: ObservableObject {
             ?? "KEF Companion"
     }
 
-    init() {
+    init(
+        speakerClientFactory: any KEFSpeakerClientFactory = LiveKEFSpeakerClientFactory(),
+        timing: SpeakerTimingPolicy = .live,
+        startImmediately: Bool = true
+    ) {
+        self.speakerClientFactory = speakerClientFactory
+        self.timing = timing
+
         migrateLegacyVolumeKeyPreference()
         refreshMediaKeyAccessStatus()
-        startConnection()
+        if startImmediately {
+            startConnection()
+        }
     }
 
     var allowedVolumeStepRange: ClosedRange<Int> {
@@ -302,7 +314,7 @@ final class AppState: ObservableObject {
                 }
             }
 
-            let deadline = ContinuousClock.now + .seconds(14)
+            let deadline = ContinuousClock.now + timing.autoDiscoveryTimeout
             while ContinuousClock.now < deadline {
                 guard !Task.isCancelled else { return }
 
@@ -317,7 +329,7 @@ final class AppState: ObservableObject {
                     }
                 }
 
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await timing.sleep(timing.autoDiscoveryPollInterval)
             }
 
             guard !Task.isCancelled else { return }
@@ -355,6 +367,7 @@ final class AppState: ObservableObject {
         connectionTask = nil
         discovery.stopDiscovery()
         pollingController.stop()
+        volumeCommandCoordinator.cancel()
         speaker = nil
         isConnected = false
         isReconnecting = false
@@ -394,7 +407,7 @@ final class AppState: ObservableObject {
 
     @discardableResult
     private func establishConnection(to host: String, retryCount: Int) async -> Bool {
-        let api = KEFSpeakerAPI(host: host)
+        let api = speakerClientFactory.makeClient(host: host)
         speaker = api
         currentHost = host
         isReconnecting = true
@@ -412,7 +425,7 @@ final class AppState: ObservableObject {
             }
 
             if attempt < retryCount - 1 {
-                try? await Task.sleep(for: connectionRetryDelay(afterAttempt: attempt))
+                try? await timing.sleep(timing.connectionRetryDelay(afterAttempt: attempt))
             }
         }
 
@@ -422,17 +435,6 @@ final class AppState: ObservableObject {
         isConnected = false
         isReconnecting = false
         return false
-    }
-
-    private func connectionRetryDelay(afterAttempt attempt: Int) -> Duration {
-        switch attempt {
-        case 0:
-            return .milliseconds(500)
-        case 1:
-            return .seconds(1)
-        default:
-            return .seconds(2)
-        }
     }
 
     // MARK: - Polling
@@ -552,7 +554,7 @@ final class AppState: ObservableObject {
     private func waitForState(timeout: Duration = .seconds(8), condition: @escaping () -> Bool) async {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await timing.sleep(timing.stateRefreshPollInterval)
             await refresh()
             if condition() { return }
         }
@@ -613,8 +615,8 @@ final class AppState: ObservableObject {
         pendingCommittedVolume = clampedVolume
         pendingVolumeResetTask?.cancel()
         pendingVolumeResetTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
             guard let self else { return }
+            try? await self.timing.sleep(self.timing.pendingVolumeRetention)
             if self.pendingCommittedVolume == clampedVolume {
                 self.clearPendingVolume()
             }
@@ -627,17 +629,20 @@ final class AppState: ObservableObject {
                 volume: clampedVolume
             )
         }
-        Task {
-            do {
-                try await speaker.setVolume(clampedVolume)
-                try? await Task.sleep(for: .milliseconds(400))
-                await refresh()
-            } catch {
-                guard self.speaker === speaker else { return }
-                clearPendingVolume()
-                await handleSpeakerActionError(error, for: speaker)
+        volumeCommandCoordinator.submit(
+            volume: clampedVolume,
+            speaker: speaker,
+            timing: timing,
+            didSendLatest: { [weak self] speaker in
+                guard let self, self.speaker === speaker else { return }
+                await self.refresh()
+            },
+            didFailLatest: { [weak self] error, speaker in
+                guard let self, self.speaker === speaker else { return }
+                self.clearPendingVolume()
+                await self.handleSpeakerActionError(error, for: speaker)
             }
-        }
+        )
     }
 
     private func adjustVolume(by delta: Int) {
@@ -670,7 +675,7 @@ final class AppState: ObservableObject {
             try await speaker.setSource(newSource)
             await self.waitForState { self.source == newSource || self.source != oldSource }
             // Speaker may take a moment to settle the per-source volume
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await self.timing.sleep(self.timing.sourceVolumeSettleDelay)
             await self.refresh()
         }
     }
@@ -701,7 +706,7 @@ final class AppState: ObservableObject {
     func nextTrack() {
         runSpeakerAction { speaker in
             try await speaker.nextTrack()
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await self.timing.sleep(self.timing.trackRefreshDelay)
             await self.refresh()
         }
     }
@@ -709,7 +714,7 @@ final class AppState: ObservableObject {
     func previousTrack() {
         runSpeakerAction { speaker in
             try await speaker.previousTrack()
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await self.timing.sleep(self.timing.trackRefreshDelay)
             await self.refresh()
         }
     }
@@ -801,11 +806,11 @@ final class AppState: ObservableObject {
         Task {
             defer { isBusy = false }
             _ = sendWakeOnLAN(macAddress: mac)
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .seconds(1))
+            for _ in 0..<timing.wakeAttemptCount {
+                try? await timing.sleep(timing.wakePollInterval)
                 guard !Task.isCancelled else { return }
                 if let host = currentHost ?? preferredWakeHost {
-                    let api = KEFSpeakerAPI(host: host)
+                    let api = speakerClientFactory.makeClient(host: host)
                     if await api.testConnection() {
                         connect(to: host)
                         return

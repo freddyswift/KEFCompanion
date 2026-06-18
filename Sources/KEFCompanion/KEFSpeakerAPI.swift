@@ -39,13 +39,21 @@ final class KEFSpeakerAPI: Sendable {
     private let setDataUsesPostCache = LockedValue<Bool?>(nil)
     private let supportsBatchedGetDataCache = LockedValue<Bool?>(nil)
 
-    init(host: String) {
+    convenience init(host: String) {
+        self.init(host: host, session: Self.makeDefaultSession())
+    }
+
+    init(host: String, session: URLSession) {
         self.host = host
+        self.session = session
+    }
+
+    private static func makeDefaultSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 5
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
-        self.session = URLSession(configuration: config)
+        return URLSession(configuration: config)
     }
 
     // MARK: - Low-level API
@@ -133,7 +141,12 @@ final class KEFSpeakerAPI: Sendable {
 
     private func validateSetDataResponse(_ data: Data) throws {
         guard !data.isEmpty else { return }
-        let response = try JSONDecoder().decode(KEFSetDataResponse.self, from: data)
+        let response: KEFSetDataResponse
+        do {
+            response = try JSONDecoder().decode(KEFSetDataResponse.self, from: data)
+        } catch {
+            throw KEFError.invalidResponse
+        }
         if let error = response.error {
             let message = error.message ?? "Speaker rejected command"
             throw KEFError.apiError(message)

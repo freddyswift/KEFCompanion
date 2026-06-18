@@ -7,17 +7,23 @@ final class KEFDiscovery: ObservableObject {
     @Published var speakers: [DiscoveredSpeaker] = []
     @Published var isSearching = false
     @Published private(set) var lastError: String?
+    @Published private(set) var lastStartedAt: Date?
 
     private var httpBrowser: NWBrowser?
     private var raopBrowser: NWBrowser?
     private var stopTask: Task<Void, Never>?
     private var discoveredMACs: [String: String] = [:]
+    private var discoveryGeneration = 0
 
     func startDiscovery() {
         stopDiscovery()
+        discoveryGeneration += 1
+        let generation = discoveryGeneration
+
         speakers = []
         discoveredMACs = [:]
         lastError = nil
+        lastStartedAt = Date()
         isSearching = true
 
         let params = NWParameters()
@@ -34,13 +40,17 @@ final class KEFDiscovery: ObservableObject {
                       let parsedService = Self.parseRAOPServiceName(name) else { continue }
 
                 Task { @MainActor in
-                    self?.recordMAC(parsedService.macAddress, for: parsedService.speakerName)
+                    self?.recordMAC(
+                        parsedService.macAddress,
+                        for: parsedService.speakerName,
+                        generation: generation
+                    )
                 }
             }
         }
         raopBrowser?.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                self?.handleBrowserState(state, label: "RAOP")
+                self?.handleBrowserState(state, label: "RAOP", generation: generation)
             }
         }
         raopBrowser?.start(queue: .global())
@@ -51,12 +61,12 @@ final class KEFDiscovery: ObservableObject {
                 guard case .service(let name, let type, let domain, _) = result.endpoint,
                       Self.isLikelyKEFSpeakerService(name) else { continue }
 
-                self?.resolveService(name: name, type: type, domain: domain)
+                self?.resolveService(name: name, type: type, domain: domain, generation: generation)
             }
         }
         httpBrowser?.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                self?.handleBrowserState(state, label: "HTTP")
+                self?.handleBrowserState(state, label: "HTTP", generation: generation)
             }
         }
         httpBrowser?.start(queue: .global())
@@ -64,11 +74,22 @@ final class KEFDiscovery: ObservableObject {
         stopTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled else { return }
-            self?.stopDiscovery()
+            self?.stopDiscovery(generation: generation)
         }
     }
 
     func stopDiscovery() {
+        discoveryGeneration += 1
+        stopCurrentDiscovery()
+    }
+
+    private func stopDiscovery(generation: Int) {
+        guard generation == discoveryGeneration else { return }
+        discoveryGeneration += 1
+        stopCurrentDiscovery()
+    }
+
+    private func stopCurrentDiscovery() {
         stopTask?.cancel()
         stopTask = nil
         httpBrowser?.cancel()
@@ -78,7 +99,9 @@ final class KEFDiscovery: ObservableObject {
         isSearching = false
     }
 
-    private func recordMAC(_ macAddress: String, for speakerName: String) {
+    private func recordMAC(_ macAddress: String, for speakerName: String, generation: Int) {
+        guard generation == discoveryGeneration else { return }
+
         let normalizedName = Self.normalizedServiceName(speakerName)
         discoveredMACs[normalizedName] = macAddress
 
@@ -119,17 +142,17 @@ final class KEFDiscovery: ObservableObject {
         )
     }
 
-    private func handleBrowserState(_ state: NWBrowser.State, label: String) {
-        Task { @MainActor in
-            switch state {
-            case .failed(let error):
-                lastError = "\(label) discovery failed: \(error.localizedDescription)"
-                isSearching = false
-            case .cancelled:
-                break
-            default:
-                break
-            }
+    private func handleBrowserState(_ state: NWBrowser.State, label: String, generation: Int) {
+        guard generation == discoveryGeneration else { return }
+
+        switch state {
+        case .failed(let error):
+            lastError = "\(label) discovery failed: \(error.localizedDescription)"
+            isSearching = false
+        case .cancelled:
+            break
+        default:
+            break
         }
     }
 
@@ -138,7 +161,7 @@ final class KEFDiscovery: ObservableObject {
     /// NWConnection's IP resolution can return IPv6-only on some networks,
     /// so we use DNSServiceResolve to get the actual .local hostname, then
     /// getaddrinfo to look up the IPv4 address.
-    nonisolated private func resolveService(name: String, type: String, domain: String) {
+    nonisolated private func resolveService(name: String, type: String, domain: String, generation: Int) {
         DispatchQueue.global().async { [weak self] in
             guard let hostname = Self.resolveServiceHostname(name: name, type: type, domain: domain) else {
                 return
@@ -146,7 +169,7 @@ final class KEFDiscovery: ObservableObject {
             let host = Self.resolveToIPv4(hostname) ?? hostname
 
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.discoveryGeneration == generation else { return }
                 self.addSpeaker(name: name, host: host)
             }
         }

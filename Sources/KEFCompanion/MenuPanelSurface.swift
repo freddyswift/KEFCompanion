@@ -28,6 +28,8 @@ enum PanelColors {
     static let sectionStroke = Color(nsColor: .separatorColor).opacity(0.22)
     static let controlFill = Color(nsColor: .controlBackgroundColor).opacity(0.58)
     static let rowFill = Color(nsColor: .separatorColor).opacity(0.07)
+    static let secondaryText = Color.primary.opacity(0.74)
+    static let tertiaryText = Color.primary.opacity(0.62)
 }
 
 struct PanelWindowBackground: ViewModifier {
@@ -52,6 +54,7 @@ struct PanelMaterialCardBackground<BackgroundShape: InsettableShape>: ViewModifi
     let shape: BackgroundShape
     let fillOpacity: Double
     let strokeOpacity: Double
+    let lineWidth: CGFloat
 
     func body(content: Content) -> some View {
         content
@@ -62,7 +65,7 @@ struct PanelMaterialCardBackground<BackgroundShape: InsettableShape>: ViewModifi
             )
             .overlay {
                 shape
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(strokeOpacity), lineWidth: 1)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(strokeOpacity), lineWidth: lineWidth)
             }
     }
 }
@@ -133,9 +136,10 @@ extension View {
     func panelMaterialCardBackground<BackgroundShape: InsettableShape>(
         _ shape: BackgroundShape,
         fillOpacity: Double = 0.34,
-        strokeOpacity: Double = 0.22
+        strokeOpacity: Double = 0.22,
+        lineWidth: CGFloat = 1
     ) -> some View {
-        modifier(PanelMaterialCardBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity))
+        modifier(PanelMaterialCardBackground(shape: shape, fillOpacity: fillOpacity, strokeOpacity: strokeOpacity, lineWidth: lineWidth))
     }
 
     /// Cheaper card styling for hot-path surfaces such as the menu-bar popup.

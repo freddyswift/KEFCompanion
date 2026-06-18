@@ -36,9 +36,11 @@ struct SettingsSection<Content: View>: View {
         .padding(10)
         .panelMaterialCardBackground(
             RoundedRectangle(cornerRadius: 8, style: .continuous),
-            fillOpacity: 0.34,
-            strokeOpacity: 0.22
+            fillOpacity: 0.42,
+            strokeOpacity: 0.72,
+            lineWidth: 1.5
         )
+        .shadow(color: .black.opacity(0.10), radius: 4, x: 0, y: 1)
         .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
     }
 }
@@ -83,13 +85,13 @@ struct StatusRow<Accessory: View>: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.caption.weight(.medium))
+                    .font(.caption.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let detail {
                     Text(detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(PanelColors.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

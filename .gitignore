@@ -13,6 +13,7 @@ DerivedData/
 *.ipa
 *.pkg
 dist/
+tmp-screenshots/
 .omx/
 .codex/
 .env
